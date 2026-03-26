@@ -1,0 +1,21 @@
+telegram:
+  token: "" # Set via TELEGRAM_BOT_TOKEN env var
+  allowed_chat_ids: [] # Empty = allow all. Set specific chat IDs to restrict access.
+
+mcp:
+  kubernetes:
+    command: "npx"
+    args: ["-y", "@anthropic/kubernetes-mcp-server"]
+    timeout: 30
+  logs:
+    command: "victoria-logs-mcp"
+    args: []
+    env:
+      VICTORIA_LOGS_URL: "http://localhost:9428"
+    timeout: 30
+  metrics:
+    command: "victoria-metrics-mcp"
+    args: []
+    env:
+      VICTORIA_METRICS_URL: "http://localhost:8428"
+    timeout: 30

@@ -1,0 +1,20 @@
+patterns:
+  - name: bearer_token
+    pattern: '(?i)(bearer\s+)[a-zA-Z0-9\-._~+/]+=*'
+    replace: "${1}[REDACTED]"
+
+  - name: password_field
+    pattern: '(?i)(password|passwd|pwd)\s*[=:]\s*\S+'
+    replace: "${1}=[REDACTED]"
+
+  - name: api_key
+    pattern: '(?i)(api[_-]?key|apikey)\s*[=:]\s*\S+'
+    replace: "${1}=[REDACTED]"
+
+  - name: secret_field
+    pattern: '(?i)(secret|token)\s*[=:]\s*\S+'
+    replace: "${1}=[REDACTED]"
+
+  - name: connection_string
+    pattern: '(?i)(mongodb|postgres|mysql|redis)://[^\s]+'
+    replace: "[REDACTED_CONNECTION_STRING]"
