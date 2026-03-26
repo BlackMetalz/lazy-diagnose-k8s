@@ -10,20 +10,23 @@ import (
 
 // ParsedMessage represents a parsed Telegram message.
 type ParsedMessage struct {
-	Command string // "diag", "pod", "deploy", "check", or empty for free text
-	Target  string // the target resource or service name
-	RawText string
+	Command   string // "diag", "pod", "deploy", "check", "scan", or empty for free text
+	Target    string // the target resource or service name
+	Namespace string // optional namespace override (-n flag)
+	RawText   string
 }
 
-// ParseMessage extracts command and target from a Telegram message.
+// ParseMessage extracts command, target, and namespace from a Telegram message.
 // Supported formats:
 //
-//	/diag checkout vừa deploy xong
-//	/pod payment-api-abc prod
-//	/deploy checkout prod
 //	/check checkout
-//	check checkout    (without slash)
-//	checkout bị crash (free text)
+//	/check checkout -n staging
+//	/diag payment just deployed, seeing 5xx
+//	/pod payment-api-7f8b9c-x4k2p
+//	/deploy checkout
+//	/scan                          (scan default namespace)
+//	/scan prod                     (scan specific namespace)
+//	checkout is crashing           (free text)
 func ParseMessage(text string) ParsedMessage {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -34,17 +37,29 @@ func ParseMessage(text string) ParsedMessage {
 	if strings.HasPrefix(text, "/") {
 		parts := strings.Fields(text)
 		cmd := strings.TrimPrefix(parts[0], "/")
+		// Strip @botname suffix (e.g. /check@mybot → check)
+		if idx := strings.Index(cmd, "@"); idx > 0 {
+			cmd = cmd[:idx]
+		}
 
 		switch cmd {
-		case "diag", "check", "pod", "deploy":
-			target := ""
+		case "scan":
+			ns := ""
 			if len(parts) > 1 {
-				target = parts[1]
+				ns = parts[1]
 			}
 			return ParsedMessage{
-				Command: cmd,
-				Target:  target,
-				RawText: text,
+				Command:   "scan",
+				Namespace: ns,
+				RawText:   text,
+			}
+		case "diag", "check", "pod", "deploy":
+			target, ns := extractTargetAndNamespace(parts[1:])
+			return ParsedMessage{
+				Command:   cmd,
+				Target:    target,
+				Namespace: ns,
+				RawText:   text,
 			}
 		case "start", "help":
 			return ParsedMessage{
@@ -71,6 +86,21 @@ func ParseMessage(text string) ParsedMessage {
 		Target:  target,
 		RawText: text,
 	}
+}
+
+// extractTargetAndNamespace parses [target] [-n namespace] from args.
+func extractTargetAndNamespace(args []string) (target, namespace string) {
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "-n" || args[i] == "--namespace") && i+1 < len(args) {
+			namespace = args[i+1]
+			i++ // skip next
+			continue
+		}
+		if target == "" {
+			target = args[i]
+		}
+	}
+	return target, namespace
 }
 
 func isNoiseWord(w string) bool {
@@ -130,7 +160,7 @@ func FormatResult(result *domain.DiagnosisResult) string {
 			b.WriteString(fmt.Sprintf("  <code>%s</code>\n", esc(truncate(e, 80))))
 		}
 		if len(result.SupportingEvidence) > 6 {
-			b.WriteString(fmt.Sprintf("  <i>... +%d dòng</i>\n", len(result.SupportingEvidence)-6))
+			b.WriteString(fmt.Sprintf("  <i>... +%d more</i>\n", len(result.SupportingEvidence)-6))
 		}
 		b.WriteString("\n")
 	}
@@ -166,6 +196,73 @@ func FormatResult(result *domain.DiagnosisResult) string {
 	return b.String()
 }
 
+// ScanResult holds one unhealthy pod found during scan.
+type ScanResult struct {
+	Name      string
+	Namespace string
+	Reason    string
+	Restarts  int
+	OwnerKind string
+	OwnerName string
+}
+
+// FormatScanResult formats the scan output for Telegram.
+func FormatScanResult(namespace string, results []ScanResult, duration time.Duration) string {
+	var b strings.Builder
+
+	if len(results) == 0 {
+		b.WriteString(fmt.Sprintf("✅ <b>Scan: %s</b>\n", esc(namespace)))
+		b.WriteString("─────────────────────\n\n")
+		b.WriteString("All pods healthy. No issues found.\n")
+		b.WriteString(fmt.Sprintf("\n<i>%s</i>", duration.Round(time.Millisecond)))
+		return b.String()
+	}
+
+	b.WriteString(fmt.Sprintf("🔍 <b>Scan: %s</b> — %d issue(s)\n", esc(namespace), len(results)))
+	b.WriteString("─────────────────────\n\n")
+
+	for _, r := range results {
+		icon := reasonIcon(r.Reason)
+		owner := ""
+		if r.OwnerName != "" {
+			owner = fmt.Sprintf(" (%s/%s)", r.OwnerKind, r.OwnerName)
+		}
+		restartInfo := ""
+		if r.Restarts > 0 {
+			restartInfo = fmt.Sprintf(", %dx restarts", r.Restarts)
+		}
+		b.WriteString(fmt.Sprintf("%s <code>%s</code>%s\n   %s%s\n\n",
+			icon, esc(r.Name), esc(owner), esc(r.Reason), esc(restartInfo)))
+	}
+
+	b.WriteString("<b>Diagnose a specific target:</b>\n")
+	// Suggest command for the first unhealthy pod's owner
+	if len(results) > 0 && results[0].OwnerName != "" {
+		b.WriteString(fmt.Sprintf("  <code>/check %s -n %s</code>\n", esc(results[0].OwnerName), esc(namespace)))
+	}
+	if len(results) > 1 && results[1].OwnerName != "" && results[1].OwnerName != results[0].OwnerName {
+		b.WriteString(fmt.Sprintf("  <code>/check %s -n %s</code>\n", esc(results[1].OwnerName), esc(namespace)))
+	}
+
+	b.WriteString(fmt.Sprintf("\n<i>%s</i>", duration.Round(time.Millisecond)))
+	return b.String()
+}
+
+func reasonIcon(reason string) string {
+	switch {
+	case strings.Contains(reason, "CrashLoop") || strings.Contains(reason, "OOMKilled"):
+		return "🔴"
+	case strings.Contains(reason, "ImagePull") || strings.Contains(reason, "ErrImage"):
+		return "🟠"
+	case strings.Contains(reason, "Pending") || strings.Contains(reason, "Unschedulable"):
+		return "🟡"
+	case strings.Contains(reason, "Restarting"):
+		return "🟡"
+	default:
+		return "⚪"
+	}
+}
+
 func confidenceBadge(c domain.Confidence) string {
 	switch c {
 	case domain.ConfidenceHigh:
@@ -191,16 +288,19 @@ func FormatHelpMessage() string {
 Kubernetes diagnosis via Telegram. Collects data from K8s, metrics, and logs — returns diagnosis + suggested commands.
 
 <b>Commands:</b>
-/check &lt;target&gt; — General health check
+/scan [namespace] — Find all unhealthy pods
+/check &lt;target&gt; [-n ns] — General health check
 /diag &lt;target&gt; &lt;context&gt; — Diagnosis with description
 /pod &lt;pod-name&gt; — Check a specific pod
 /deploy &lt;deployment&gt; — Check rollout status
 /help — This message
 
 <b>Examples:</b>
+• <code>/scan</code> — scan default namespace
+• <code>/scan prod</code> — scan specific namespace
 • <code>/check checkout</code>
+• <code>/check checkout -n staging</code>
 • <code>/diag payment just deployed, seeing 5xx</code>
-• <code>/pod payment-api-7f8b9c-x4k2p</code>
 • <code>/deploy checkout</code>
 
 <b>What it detects:</b>

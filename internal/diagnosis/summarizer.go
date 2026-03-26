@@ -84,7 +84,7 @@ func resolveBackend(cfg SummarizerConfig) (baseURL, model string) {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
 		if model == "" {
-			model = "google/gemini-2.0-flash-exp:free"
+			model = "meta-llama/llama-3.3-70b-instruct:free"
 		}
 	case "openai":
 		if baseURL == "" {
@@ -166,6 +166,7 @@ const systemPrompt = `You are a Kubernetes diagnosis expert. You receive an evid
 
 Rules:
 - Write concise, clear English
+- Plain text only — NO markdown, NO bold, NO headers, NO bullet points
 - Distinguish between OBSERVATIONS (facts) and INFERENCES (conclusions)
 - If data is missing (missing_sources), note it and lower confidence
 - Do not invent information beyond the evidence
@@ -228,7 +229,34 @@ Write a concise summary (3-5 sentences) explaining:
 		return "", fmt.Errorf("LLM returned no choices")
 	}
 
-	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
+	text := strings.TrimSpace(resp.Choices[0].Message.Content)
+	return stripMarkdown(text), nil
+}
+
+// stripMarkdown removes common markdown formatting that LLMs tend to include.
+// We render as plain text inside our own HTML template, so markdown syntax shows raw.
+func stripMarkdown(s string) string {
+	// **bold** or __bold__ → bold
+	for _, marker := range []string{"**", "__"} {
+		for strings.Contains(s, marker) {
+			start := strings.Index(s, marker)
+			end := strings.Index(s[start+len(marker):], marker)
+			if end == -1 {
+				break
+			}
+			inner := s[start+len(marker) : start+len(marker)+end]
+			s = s[:start] + inner + s[start+len(marker)+end+len(marker):]
+		}
+	}
+	// *italic* → italic (single asterisk, not inside words)
+	// `code` → code
+	s = strings.ReplaceAll(s, "`", "")
+	// # headers → remove #
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimLeft(line, "# ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func buildEvidenceSummary(intent domain.Intent, bundle *domain.EvidenceBundle, result *domain.DiagnosisResult) evidenceSummary {

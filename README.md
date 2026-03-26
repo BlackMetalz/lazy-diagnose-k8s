@@ -71,14 +71,23 @@ export LLM_API_KEY="your-gemini-api-key"
 
 ### OpenRouter (free models available)
 
-Aggregator with multiple models, some free.
+Aggregator with multiple models, some free. Rate limit: 20 req/min, 200 req/day.
 
 ```bash
-# Create account at https://openrouter.ai
+# Create account at https://openrouter.ai (no credit card needed)
 export LLM_BACKEND=openrouter
 export LLM_API_KEY="your-openrouter-key"
-# Default model: google/gemini-2.0-flash-exp:free
+# Default model: meta-llama/llama-3.3-70b-instruct:free
 ```
+
+Other free models you can use via `LLM_MODEL`:
+- `google/gemma-3-27b-it:free` — lightweight, fast
+- `nvidia/nemotron-3-super-120b-a12b:free` — large context (262K tokens)
+- `mistralai/mistral-small-3.1-24b-instruct:free`
+- `qwen/qwen3-next-80b-a3b-instruct:free`
+- `openrouter/free` — auto-selects best free model
+
+Full list: https://openrouter.ai/collections/free-models
 
 ### OpenAI
 

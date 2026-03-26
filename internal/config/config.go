@@ -10,10 +10,27 @@ import (
 // Config holds all application configuration.
 type Config struct {
 	Telegram   TelegramConfig   `yaml:"telegram"`
+	LLM        LLMConfig        `yaml:"llm"`
 	MCP        MCPConfig        `yaml:"mcp"`
+	Providers  ProvidersConfig  `yaml:"providers"`
 	ServiceMap ServiceMap       `yaml:"service_map"`
 	Playbooks  PlaybookRules    `yaml:"playbooks"`
 	Redaction  RedactionRules   `yaml:"redaction"`
+}
+
+// LLMConfig configures the LLM summarizer backend.
+type LLMConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Backend string `yaml:"backend"`  // ollama, gemini, openrouter, openai, or custom
+	BaseURL string `yaml:"base_url"` // auto-set per backend if empty
+	APIKey  string `yaml:"api_key"`  // not needed for ollama
+	Model   string `yaml:"model"`    // auto-set per backend if empty
+}
+
+// ProvidersConfig configures data source endpoints.
+type ProvidersConfig struct {
+	VictoriaMetricsURL string `yaml:"victoria_metrics_url"`
+	VictoriaLogsURL    string `yaml:"victoria_logs_url"`
 }
 
 type TelegramConfig struct {

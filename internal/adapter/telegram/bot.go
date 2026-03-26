@@ -10,20 +10,23 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/lazy-diagnose-k8s/internal/domain"
 	"github.com/lazy-diagnose-k8s/internal/playbook"
+	k8sprovider "github.com/lazy-diagnose-k8s/internal/provider/kubernetes"
 	"github.com/lazy-diagnose-k8s/internal/resolver"
 )
 
 // Bot is the Telegram bot that handles diagnosis requests.
 type Bot struct {
-	api      *tgbotapi.BotAPI
-	engine   *playbook.Engine
-	resolver *resolver.Resolver
-	logger   *slog.Logger
-	allowedChatIDs map[int64]bool
+	api              *tgbotapi.BotAPI
+	engine           *playbook.Engine
+	resolver         *resolver.Resolver
+	scanner          *k8sprovider.Provider
+	defaultNamespace string
+	logger           *slog.Logger
+	allowedChatIDs   map[int64]bool
 }
 
 // NewBot creates a new Telegram bot.
-func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, allowedChatIDs []int64, logger *slog.Logger) (*Bot, error) {
+func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, logger *slog.Logger) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("create telegram bot: %w", err)
@@ -36,11 +39,17 @@ func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, 
 
 	logger.Info("telegram bot authorized", "username", api.Self.UserName)
 
+	if defaultNs == "" {
+		defaultNs = "prod"
+	}
+
 	return &Bot{
-		api:            api,
-		engine:         engine,
-		resolver:       resolver,
-		logger:         logger,
+		api:              api,
+		engine:           engine,
+		resolver:         resolver,
+		scanner:          scanner,
+		defaultNamespace: defaultNs,
+		logger:           logger,
 		allowedChatIDs: allowed,
 	}, nil
 }
@@ -91,15 +100,24 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	case "start", "help":
 		b.sendMessage(chatID, FormatHelpMessage())
 		return
-	}
-
-	if parsed.Target == "" {
-		b.sendMessage(chatID, "Missing target. Example: /check checkout or /diag payment seeing errors")
+	case "scan":
+		go b.handleScan(ctx, chatID, parsed)
 		return
 	}
 
+	if parsed.Target == "" {
+		b.sendMessage(chatID, "Missing target. Example:\n  <code>/check checkout</code>\n  <code>/scan prod</code>")
+		return
+	}
+
+	// Resolve namespace: flag > default
+	ns := parsed.Namespace
+	if ns == "" {
+		ns = b.defaultNamespace
+	}
+
 	// Resolve target
-	target, err := b.resolver.Resolve(parsed.Target, "prod")
+	target, err := b.resolver.Resolve(parsed.Target, ns)
 	if err != nil {
 		b.sendMessage(chatID, FormatError(err))
 		return
@@ -144,6 +162,60 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 	// Send final result (replace progress message)
 	formatted := FormatResult(result)
+	if progressMsg != 0 {
+		b.editMessage(chatID, progressMsg, formatted)
+	} else {
+		b.sendMessage(chatID, formatted)
+	}
+}
+
+func (b *Bot) handleScan(ctx context.Context, chatID int64, parsed ParsedMessage) {
+	ns := parsed.Namespace
+	if ns == "" {
+		ns = b.defaultNamespace
+	}
+
+	if b.scanner == nil {
+		b.sendMessage(chatID, FormatError(fmt.Errorf("K8s provider not available, cannot scan")))
+		return
+	}
+
+	progressMsg := b.sendMessage(chatID, fmt.Sprintf("🔍 Scanning namespace <b>%s</b>...", esc(ns)))
+	start := time.Now()
+
+	unhealthy, err := b.scanner.ScanNamespace(ctx, ns)
+	if err != nil {
+		b.sendMessage(chatID, FormatError(fmt.Errorf("scan %s: %w", ns, err)))
+		return
+	}
+
+	// Convert to ScanResult
+	var results []ScanResult
+	seen := make(map[string]bool) // dedupe by owner
+	for _, u := range unhealthy {
+		// Dedupe: show one pod per owner (deployment/statefulset)
+		key := u.OwnerName
+		if key == "" {
+			key = u.Name
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		results = append(results, ScanResult{
+			Name:      u.Name,
+			Namespace: u.Namespace,
+			Reason:    u.Reason,
+			Restarts:  u.Restarts,
+			OwnerKind: u.OwnerKind,
+			OwnerName: u.OwnerName,
+		})
+	}
+
+	b.logger.Info("scan complete", "namespace", ns, "unhealthy", len(results), "duration", time.Since(start))
+
+	formatted := FormatScanResult(ns, results, time.Since(start))
 	if progressMsg != 0 {
 		b.editMessage(chatID, progressMsg, formatted)
 	} else {

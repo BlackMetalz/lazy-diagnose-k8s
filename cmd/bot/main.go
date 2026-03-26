@@ -72,42 +72,44 @@ func main() {
 	}
 
 	// Metrics provider (VictoriaMetrics)
-	vmURL := envOr("VICTORIA_METRICS_URL", "http://localhost:8428")
+	// Config file → env var override → default
+	vmURL := firstNonEmpty(os.Getenv("VICTORIA_METRICS_URL"), cfg.Providers.VictoriaMetricsURL, "http://localhost:8428")
 	collector.Metrics = metricsprovider.New(vmURL)
 	logger.Info("metrics provider initialized", "url", vmURL)
 
 	// Logs provider (VictoriaLogs)
-	vlURL := envOr("VICTORIA_LOGS_URL", "http://localhost:9428")
+	vlURL := firstNonEmpty(os.Getenv("VICTORIA_LOGS_URL"), cfg.Providers.VictoriaLogsURL, "http://localhost:9428")
 	collector.Logs = logsprovider.New(vlURL)
 	logger.Info("logs provider initialized", "url", vlURL)
 
 	diagEngine := diagnosis.New(playbookRules).WithLogger(logger)
 
 	// LLM Summarizer (optional)
-	// Supports: ollama (free/local), gemini (free tier), openrouter, openai, anthropic
-	// Config via env vars: LLM_BACKEND, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
-	llmBackend := os.Getenv("LLM_BACKEND")
-	if llmBackend != "" {
-		cfg := diagnosis.SummarizerConfig{
-			Backend: llmBackend,
-			BaseURL: os.Getenv("LLM_BASE_URL"),
-			APIKey:  os.Getenv("LLM_API_KEY"),
-			Model:   os.Getenv("LLM_MODEL"),
-		}
-		summarizer := diagnosis.NewSummarizer(cfg)
+	// Priority: env var > config file > disabled
+	llmCfg := resolveLLMConfig(cfg)
+	if llmCfg.Backend != "" {
+		summarizer := diagnosis.NewSummarizer(diagnosis.SummarizerConfig{
+			Backend: llmCfg.Backend,
+			BaseURL: llmCfg.BaseURL,
+			APIKey:  llmCfg.APIKey,
+			Model:   llmCfg.Model,
+		})
 		diagEngine.WithSummarizer(summarizer)
 		logger.Info("LLM summarizer enabled", "backend", summarizer.Backend(), "model", summarizer.ModelName())
 	} else {
-		logger.Info("LLM summarizer disabled (set LLM_BACKEND to enable: ollama/gemini/openrouter/openai)")
+		logger.Info("LLM summarizer disabled (configure llm section in config.yaml or set LLM_BACKEND env var)")
 	}
 
 	playbookEngine := playbook.New(collector, diagEngine)
 
 	// Create and run bot
+	defaultNs := envOr("DEFAULT_NAMESPACE", "prod")
 	bot, err := telegram.NewBot(
 		cfg.Telegram.Token,
 		playbookEngine,
 		targetResolver,
+		k8s, // scanner (can be nil if K8s unavailable)
+		defaultNs,
 		cfg.Telegram.AllowedChatIDs,
 		logger,
 	)
@@ -150,6 +152,48 @@ func initK8sProvider(logger *slog.Logger) (*k8sprovider.Provider, error) {
 	}
 	logger.Info("using kubeconfig", "path", kubeconfig)
 	return p, nil
+}
+
+// resolveLLMConfig merges config file + env var overrides.
+// Env vars take priority over config file values.
+func resolveLLMConfig(cfg *config.Config) config.LLMConfig {
+	result := cfg.LLM
+
+	// Env vars override config file
+	if v := os.Getenv("LLM_BACKEND"); v != "" {
+		result.Backend = v
+		result.Enabled = true
+	}
+	if v := os.Getenv("LLM_BASE_URL"); v != "" {
+		result.BaseURL = v
+	}
+	if v := os.Getenv("LLM_API_KEY"); v != "" {
+		result.APIKey = v
+	}
+	if v := os.Getenv("LLM_MODEL"); v != "" {
+		result.Model = v
+	}
+
+	// enabled: true in config but no backend → ignore
+	if result.Enabled && result.Backend == "" {
+		result.Backend = ""
+	}
+	// backend set → implicitly enabled
+	if result.Backend != "" {
+		result.Enabled = true
+	}
+
+	return result
+}
+
+// firstNonEmpty returns the first non-empty string from the arguments.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func envOr(key, fallback string) string {
