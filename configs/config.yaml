@@ -1,6 +1,13 @@
 telegram:
   token: "" # Set via TELEGRAM_BOT_TOKEN env var
   allowed_chat_ids: [] # Empty = allow all
+  alert_chat_ids: []   # Chats to receive alert notifications. Get your chat ID from @userinfobot
+
+# Alertmanager webhook receiver
+webhook:
+  enabled: true
+  addr: ":8080"          # HTTP server for receiving webhooks
+  bearer_token: ""       # Optional auth token. If set, Alertmanager must send Authorization: Bearer <token>
 
 # Data source endpoints
 providers:
@@ -10,7 +17,7 @@ providers:
 # LLM summarizer (optional — bot works without it)
 # Env vars (LLM_BACKEND, LLM_API_KEY, etc.) override these values.
 llm:
-  enabled: true
+  enabled: false
   backend: openai
   model: openrouter/free
   # backend: ollama | gemini | openrouter | openai | custom

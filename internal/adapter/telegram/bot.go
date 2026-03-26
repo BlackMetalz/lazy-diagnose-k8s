@@ -23,10 +23,11 @@ type Bot struct {
 	defaultNamespace string
 	logger           *slog.Logger
 	allowedChatIDs   map[int64]bool
+	alertChatIDs     []int64 // chats to receive alert notifications
 }
 
 // NewBot creates a new Telegram bot.
-func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, logger *slog.Logger) (*Bot, error) {
+func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, alertChatIDs []int64, logger *slog.Logger) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("create telegram bot: %w", err)
@@ -50,7 +51,8 @@ func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, 
 		scanner:          scanner,
 		defaultNamespace: defaultNs,
 		logger:           logger,
-		allowedChatIDs: allowed,
+		allowedChatIDs:   allowed,
+		alertChatIDs:     alertChatIDs,
 	}, nil
 }
 
@@ -70,6 +72,10 @@ func (b *Bot) Run(ctx context.Context) error {
 			b.api.StopReceivingUpdates()
 			return ctx.Err()
 		case update := <-updates:
+			if update.CallbackQuery != nil {
+				go b.handleCallback(ctx, update.CallbackQuery)
+				continue
+			}
 			if update.Message == nil {
 				continue
 			}

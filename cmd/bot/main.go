@@ -17,6 +17,7 @@ import (
 	logsprovider "github.com/lazy-diagnose-k8s/internal/provider/logs"
 	metricsprovider "github.com/lazy-diagnose-k8s/internal/provider/metrics"
 	"github.com/lazy-diagnose-k8s/internal/resolver"
+	"github.com/lazy-diagnose-k8s/internal/webhook"
 )
 
 func main() {
@@ -102,7 +103,7 @@ func main() {
 
 	playbookEngine := playbook.New(collector, diagEngine)
 
-	// Create and run bot
+	// Create Telegram bot
 	defaultNs := envOr("DEFAULT_NAMESPACE", "prod")
 	bot, err := telegram.NewBot(
 		cfg.Telegram.Token,
@@ -111,6 +112,7 @@ func main() {
 		k8s, // scanner (can be nil if K8s unavailable)
 		defaultNs,
 		cfg.Telegram.AllowedChatIDs,
+		cfg.Telegram.AlertChatIDs,
 		logger,
 	)
 	if err != nil {
@@ -130,6 +132,22 @@ func main() {
 		cancel()
 	}()
 
+	// Start webhook server (if enabled)
+	if cfg.Webhook.Enabled {
+		webhookAddr := cfg.Webhook.Addr
+		if webhookAddr == "" {
+			webhookAddr = ":8080"
+		}
+		webhookServer := webhook.NewServer(webhookAddr, cfg.Webhook.BearerToken, bot.HandleAlert, logger)
+		go func() {
+			if err := webhookServer.Run(ctx); err != nil {
+				logger.Error("webhook server stopped", "error", err)
+			}
+		}()
+		logger.Info("webhook server enabled", "addr", webhookAddr)
+	}
+
+	// Start Telegram bot (blocking)
 	logger.Info("starting lazy-diagnose-k8s bot")
 	if err := bot.Run(ctx); err != nil && err != context.Canceled {
 		logger.Error("bot stopped with error", "error", err)

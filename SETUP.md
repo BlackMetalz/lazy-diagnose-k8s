@@ -9,9 +9,13 @@ kind cluster
   ├── kube-state-metrics ─── scrape ──→ vmagent ─── remote_write ──→ VictoriaMetrics (host:8428)
   ├── kubelet/cAdvisor   ─── scrape ──┘
   ├── container logs      ─── tail  ──→ vlagent  ─── native push ──→ VictoriaLogs  (host:9428)
+  ├── vmalert ─── query VM ──→ evaluate rules ──→ Alertmanager ──→ webhook ──→ Bot :8080
   └── test workloads (checkout, worker, payment, ...)
 
-Bot ──→ K8s API / VictoriaMetrics / VictoriaLogs
+Bot (host)
+  ├── :8080 ← Alertmanager webhooks (auto-diagnosis)
+  ├── Telegram polling (manual /check, /scan)
+  └── → K8s API / VictoriaMetrics / VictoriaLogs
 ```
 
 Without this pipeline, providers query empty data sources.
@@ -154,7 +158,53 @@ curl -s 'http://localhost:9428/select/logsql/query' -d 'query=_msg:error OR _msg
 
 ---
 
-## Step 5: Deploy test workloads
+## Step 5: Alerting pipeline (vmalert + Alertmanager)
+
+Evaluates alerting rules against VictoriaMetrics. When an alert fires, Alertmanager sends a webhook to the bot, which auto-diagnoses and sends results to Telegram.
+
+```
+VictoriaMetrics (metrics data)
+        ↓ query
+     vmalert (evaluates alerting rules every 15s)
+        ↓ fires alert
+  Alertmanager (routes + groups alerts)
+        ↓ webhook POST
+  Bot :8080/webhook/alertmanager
+        ↓ auto-diagnose
+  Telegram (sends diagnosis + action buttons)
+```
+
+```bash
+# Alert rules (CrashLoop, Pending, OOMKilled, ImagePull, Replicas mismatch)
+kubectl apply -f deploy/monitoring/alert-rules.yaml
+
+# Alertmanager — receives alerts from vmalert, sends webhooks to bot
+kubectl apply -f deploy/monitoring/alertmanager.yaml
+
+# vmalert — evaluates rules against VictoriaMetrics, sends to Alertmanager
+kubectl apply -f deploy/monitoring/vmalert.yaml
+
+# Verify
+kubectl -n monitoring get pods
+kubectl -n monitoring logs deployment/vmalert --tail=10
+kubectl -n monitoring logs deployment/alertmanager --tail=10
+```
+
+**Verify alerts are firing** (after deploying test workloads):
+```bash
+# Check vmalert alerts
+curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=ALERTS{alertstate="firing"}' | jq '.data.result[] | {alertname: .metric.alertname, pod: .metric.pod, severity: .metric.severity}'
+
+# Check Alertmanager
+kubectl -n monitoring port-forward svc/alertmanager 9093:9093 &
+curl -s http://localhost:9093/api/v2/alerts | jq '.[].labels.alertname'
+```
+
+**Note:** The bot must be running with `webhook.enabled: true` (default port `:8080`) for Alertmanager to deliver alerts. Alertmanager inside kind reaches the bot via `host.docker.internal:8080`.
+
+---
+
+## Step 6: Deploy test workloads
 
 ```bash
 kubectl create namespace prod
@@ -187,7 +237,7 @@ curl -s 'http://localhost:9428/select/logsql/query' -d 'query=kubernetes.pod_nam
 
 ---
 
-## Step 6: Run the bot
+## Step 7: Run the bot
 
 ```bash
 # Create a Telegram bot:
@@ -208,10 +258,12 @@ make run
 | kube-state-metrics | ~64MB | inside kind |
 | vmagent | ~128MB | inside kind |
 | vlagent | ~28MB per node | DaemonSet, 2 nodes |
+| vmalert | ~32MB | inside kind |
+| Alertmanager | ~32MB | inside kind |
 | VictoriaMetrics | ~200MB | Docker host |
 | VictoriaLogs | ~200MB | Docker host |
 | Bot | ~50MB | Go binary |
-| **Total** | **~2.7GB** | M1 Pro 16GB: plenty of headroom |
+| **Total** | **~2.8GB** | M1 Pro 16GB: plenty of headroom |
 
 ---
 

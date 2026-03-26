@@ -1,8 +1,39 @@
 # Diagnosis Flow
 
-Step-by-step walkthrough of what happens when a user sends a message to the bot.
+Step-by-step walkthrough of what happens when the bot receives input.
 
-## Example: `/check checkout`
+There are two entry points into the same diagnosis pipeline:
+1. **Alert flow**: Alertmanager webhook → auto-diagnosis
+2. **Manual flow**: User sends `/check` or `/scan`
+
+---
+
+## Alert Flow (Proactive)
+
+```
+vmalert (every 15s) → evaluates rules against VictoriaMetrics
+    ↓ alert fires (e.g. KubePodCrashLooping)
+Alertmanager → groups alerts, waits group_wait (15s)
+    ↓ POST /webhook/alertmanager
+Bot webhook server (:8080) → parses payload
+    ↓ extracts target from labels: namespace, pod, deployment
+    ↓ classifies intent from alert name (KubePodCrashLooping → crashloop)
+    ↓ runs diagnosis pipeline (same as /check)
+Telegram → sends alert header + diagnosis result + inline buttons
+    [🔄 Rerun] [📜 Logs] [🔍 Scan NS]
+```
+
+**Target extraction from alert labels:**
+The webhook parser tries these label keys in order: `pod` → `deployment` → `statefulset` → `daemonset` → `container`. If `deployment` label exists alongside `pod`, it uses the deployment (higher level owner). Namespace comes from the `namespace` label.
+
+**Intent classification from alert name:**
+- `KubePodCrashLooping`, `ContainerOOMKilled` → `crashloop`
+- `KubePodNotReady` (Pending) → `pending`
+- `KubeDeploymentReplicasMismatch` → `rollout_regression`
+
+---
+
+## Manual Flow: `/check checkout`
 
 ### Step 1: Message Received
 

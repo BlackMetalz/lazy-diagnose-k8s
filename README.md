@@ -1,6 +1,18 @@
 # lazy-diagnose-k8s
 
-Telegram ChatOps bot for Kubernetes diagnosis. Automatically collects data from K8s, VictoriaMetrics, and VictoriaLogs, then returns a structured diagnosis with suggested kubectl commands.
+Telegram ChatOps bot for Kubernetes diagnosis. Receives alerts from Alertmanager or manual commands, auto-diagnoses using deterministic playbooks, and returns structured results with suggested kubectl commands.
+
+## How It Works
+
+```
+Alertmanager ──webhook──→ Bot :8080 ──→ auto-diagnose ──→ Telegram (alert + diagnosis + buttons)
+User ──────── /check ───→ Bot ────────→ diagnose ──────→ Telegram (diagnosis + buttons)
+User ──────── /scan ────→ Bot ────────→ find issues ───→ Telegram (unhealthy pod list)
+```
+
+Two entry points, same diagnosis pipeline:
+- **Proactive**: Alertmanager fires → bot auto-diagnoses → sends to Telegram with action buttons
+- **Reactive**: User sends `/check` or `/scan` → bot diagnoses → returns result
 
 ## Quick Start
 
@@ -13,13 +25,26 @@ make run
 
 | Command | Description |
 |---|---|
-| `/check <target>` | General health check |
-| `/diag <target> <description>` | Diagnosis with context |
+| `/scan [namespace]` | Find all unhealthy pods in a namespace |
+| `/check <target> [-n ns]` | Diagnose a specific target |
+| `/diag <target> <context>` | Diagnose with description |
 | `/pod <pod-name>` | Check a specific pod |
 | `/deploy <deployment>` | Check rollout status |
 | `/help` | Show usage guide |
 
-Target can be a service name from `service_map.yaml`, an exact deployment/pod name, or a path like `deployment/checkout` or `prod/deployment/checkout`.
+**Target** can be a service name from `service_map.yaml`, an exact resource name, or a path like `deployment/checkout` or `prod/deployment/checkout`.
+
+**Namespace**: defaults to `prod`. Override with `-n staging` or set `DEFAULT_NAMESPACE` env var.
+
+**Examples:**
+```
+/scan                          # scan default namespace
+/scan prod                     # scan specific namespace
+/check checkout                # diagnose checkout in default ns
+/check checkout -n staging     # diagnose in staging
+/diag payment just deployed, seeing 5xx
+/deploy payment
+```
 
 ## Playbooks
 
@@ -29,134 +54,113 @@ Target can be a service name from `service_map.yaml`, an exact deployment/pod na
 | **Pending** | Insufficient resources, taint/toleration mismatch, affinity, PVC binding, quota |
 | **Rollout regression** | Release regression, image pull failure, exposed dependency bugs, resource pressure |
 
+## Alertmanager Integration
+
+The bot runs an HTTP server (default `:8080`) that receives Alertmanager webhooks. When an alert fires, the bot:
+
+1. Extracts K8s target from alert labels (pod, deployment, namespace)
+2. Runs the same diagnosis pipeline as `/check`
+3. Sends alert notification + diagnosis result to configured Telegram chats
+4. Attaches inline action buttons (Rerun / Logs / Scan NS)
+
+**Configure in `config.yaml`:**
+```yaml
+telegram:
+  alert_chat_ids: [YOUR_CHAT_ID]  # where alerts go
+
+webhook:
+  enabled: true
+  addr: ":8080"
+  bearer_token: ""  # optional auth
+```
+
+**Alert rules included** (`deploy/monitoring/alert-rules.yaml`):
+- `KubePodCrashLooping` — CrashLoopBackOff > 1 min
+- `KubePodNotReady` — Pending/Unknown > 2 min
+- `ContainerOOMKilled` — OOM termination
+- `ContainerHighRestartCount` — restarts > 5
+- `KubePodImagePullError` — ErrImagePull/ImagePullBackOff > 1 min
+- `KubeDeploymentReplicasMismatch` — desired != ready > 3 min
+
+**Alerting stack:**
+```bash
+kubectl apply -f deploy/monitoring/alert-rules.yaml
+kubectl apply -f deploy/monitoring/alertmanager.yaml
+kubectl apply -f deploy/monitoring/vmalert.yaml
+```
+
+## Inline Action Buttons
+
+Diagnosis results (from alerts or `/check`) include action buttons:
+
+| Button | Action |
+|---|---|
+| 🔄 **Rerun** | Re-diagnose the same target |
+| 📜 **Logs** | Show log commands for the target |
+| 🔍 **Scan NS** | Scan the entire namespace for other issues |
+
 ## LLM Summarizer
 
-The bot can optionally use an LLM to generate natural language summaries instead of static templates. **Completely optional** — without it, the bot falls back to template-based summaries.
+Optional LLM-powered summaries. Without it, the bot uses template-based summaries (deterministic, fast). Configure in `config.yaml`:
 
-Configure via environment variables:
-
-| Env var | Description |
-|---|---|
-| `LLM_BACKEND` | Backend: `ollama`, `gemini`, `openrouter`, `openai`, or custom |
-| `LLM_BASE_URL` | API endpoint URL (auto-set per backend if empty) |
-| `LLM_API_KEY` | API key (not needed for Ollama) |
-| `LLM_MODEL` | Model name (auto-set per backend if empty) |
-
-### Ollama (free, local)
-
-Runs entirely on your machine. No cost, no data leaves your network.
-
-```bash
-brew install ollama
-ollama serve &
-ollama pull gemma3:4b
-
-export LLM_BACKEND=ollama
-# Defaults: http://localhost:11434/v1, model gemma3:4b
-# Override: export LLM_MODEL=llama3.1:8b
+```yaml
+llm:
+  enabled: true
+  backend: ollama          # ollama | gemini | openrouter | openai | custom
+  model: gemma3:4b         # auto-set per backend if empty
+  # api_key: your-key      # not needed for ollama
 ```
 
-Requires ~3GB RAM for 4B model, ~5GB for 8B. M1 Pro 16GB handles it easily.
+| Backend | Cost | Default model |
+|---|---|---|
+| **Ollama** | Free (local) | `gemma3:4b` |
+| **Gemini** | Free tier (15 RPM) | `gemini-2.0-flash` |
+| **OpenRouter** | Free models available | `meta-llama/llama-3.3-70b-instruct:free` |
+| **OpenAI** | Paid | `gpt-4o-mini` |
 
-### Gemini (generous free tier)
+See [full LLM setup guide](#llm-backend-details) below.
 
-Google provides 15 RPM + 1M tokens/day free for Gemini Flash.
+## Configuration
 
-```bash
-# Get API key at https://aistudio.google.com/apikey
-export LLM_BACKEND=gemini
-export LLM_API_KEY="your-gemini-api-key"
-# Default model: gemini-2.0-flash
-```
+All config in `configs/config.yaml`. Env vars override config file values.
 
-### OpenRouter (free models available)
-
-Aggregator with multiple models, some free. Rate limit: 20 req/min, 200 req/day.
-
-```bash
-# Create account at https://openrouter.ai (no credit card needed)
-export LLM_BACKEND=openrouter
-export LLM_API_KEY="your-openrouter-key"
-# Default model: meta-llama/llama-3.3-70b-instruct:free
-```
-
-Other free models you can use via `LLM_MODEL`:
-- `google/gemma-3-27b-it:free` — lightweight, fast
-- `nvidia/nemotron-3-super-120b-a12b:free` — large context (262K tokens)
-- `mistralai/mistral-small-3.1-24b-instruct:free`
-- `qwen/qwen3-next-80b-a3b-instruct:free`
-- `openrouter/free` — auto-selects best free model
-
-Full list: https://openrouter.ai/collections/free-models
-
-### OpenAI
-
-```bash
-export LLM_BACKEND=openai
-export LLM_API_KEY="your-openai-key"
-# Default model: gpt-4o-mini
-```
-
-### Custom Endpoint
-
-Any server exposing an OpenAI-compatible API (`/v1/chat/completions`):
-
-```bash
-export LLM_BACKEND=custom
-export LLM_BASE_URL="http://your-server:8080/v1"
-export LLM_MODEL="your-model"
-export LLM_API_KEY="your-key"  # if required
-```
-
-## Environment Variables
-
-| Env var | Required | Default | Description |
+| Setting | Config key | Env var | Default |
 |---|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Yes | | Token from @BotFather |
-| `VICTORIA_METRICS_URL` | | `http://localhost:8428` | VictoriaMetrics endpoint |
-| `VICTORIA_LOGS_URL` | | `http://localhost:9428` | VictoriaLogs endpoint |
-| `CONFIG_PATH` | | `configs/config.yaml` | Config file path |
-| `SERVICE_MAP_PATH` | | `configs/service_map.yaml` | Service map path |
-| `PLAYBOOK_RULES_PATH` | | `configs/playbook_rules.yaml` | Playbook rules path |
-| `LLM_BACKEND` | | | LLM backend (see above) |
-| `LLM_BASE_URL` | | | LLM API URL |
-| `LLM_API_KEY` | | | LLM API key |
-| `LLM_MODEL` | | | LLM model name |
+| Telegram token | `telegram.token` | `TELEGRAM_BOT_TOKEN` | (required) |
+| Alert chat IDs | `telegram.alert_chat_ids` | | `[]` |
+| Webhook enabled | `webhook.enabled` | | `true` |
+| Webhook address | `webhook.addr` | | `:8080` |
+| VictoriaMetrics | `providers.victoria_metrics_url` | `VICTORIA_METRICS_URL` | `http://localhost:8428` |
+| VictoriaLogs | `providers.victoria_logs_url` | `VICTORIA_LOGS_URL` | `http://localhost:9428` |
+| Default namespace | | `DEFAULT_NAMESPACE` | `prod` |
+| LLM backend | `llm.backend` | `LLM_BACKEND` | (disabled) |
+| LLM model | `llm.model` | `LLM_MODEL` | (per backend) |
+| LLM API key | `llm.api_key` | `LLM_API_KEY` | |
 
 ## Deploy to K8s
 
 ```bash
-# Build + load image into kind
-make docker-load
+make docker-load    # build image + load into kind
 
-# Apply manifests
 kubectl apply -f deploy/bot/namespace.yaml
 kubectl apply -f deploy/bot/rbac.yaml
 kubectl apply -f deploy/bot/configmap.yaml
 
-# Create secret
 kubectl create secret generic lazy-diagnose-secrets \
   --namespace=lazy-diagnose \
   --from-literal=TELEGRAM_BOT_TOKEN=your-token
 
-# Deploy
 kubectl apply -f deploy/bot/deployment.yaml
 ```
 
 ## Test Scenarios
 
-9 pre-built K8s failure scenarios covering CrashLoop, Pending, and Rollout regression. See [deploy/test-workloads/SCENARIOS.md](deploy/test-workloads/SCENARIOS.md) for full details on each scenario.
+9 pre-built K8s failure scenarios. See [deploy/test-workloads/SCENARIOS.md](deploy/test-workloads/SCENARIOS.md) for details.
 
 ```bash
-make scenarios          # Deploy all scenarios to namespace prod
-make scenarios-status   # Check pod status vs expected state
-make scenarios-clean    # Remove all scenarios
-```
-
-Or deploy individually:
-```bash
-kubectl apply -f deploy/test-workloads/scenario-config-missing.yaml
-# then: /check api-config-missing
+make scenarios          # deploy all scenarios
+make scenarios-status   # check pod status vs expected
+make scenarios-clean    # remove all
 ```
 
 | Scenario | Command | Expected |
@@ -169,18 +173,26 @@ kubectl apply -f deploy/test-workloads/scenario-config-missing.yaml
 | Dependency fail | `/check api-dependency-fail` | CrashLoop — Dependency / Connectivity |
 | Node selector | `/check ml-worker-taint` | Pending — Affinity / NodeSelector issue |
 | PVC not bound | `/check db-pvc-pending` | Pending — PVC binding issue |
-| Rollout regression | `/deploy payment` (after applying rollout-regression.yaml) | Rollout — Release caused regression |
+| Rollout regression | `/deploy payment` | Rollout — Release caused regression |
 
 ## Local Development
 
-See [SETUP.md](SETUP.md) for setting up a kind cluster with VictoriaMetrics + VictoriaLogs locally.
+See [SETUP.md](SETUP.md) for full local setup (kind + VictoriaMetrics + VictoriaLogs + Alertmanager).
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — system design, modules, design decisions
+- [Diagnosis Flow](docs/flow.md) — step-by-step walkthrough of a diagnosis run
+- [Test Scenarios](deploy/test-workloads/SCENARIOS.md) — pre-built K8s failure scenarios
+- [Local Setup](SETUP.md) — kind cluster + monitoring stack setup guide
 
 ## Project Structure
 
 ```
-cmd/bot/main.go                     Entry point
+cmd/bot/main.go                     Entry point (Telegram + webhook server)
 internal/
-  adapter/telegram/                 Telegram bot + message formatting
+  adapter/telegram/                 Telegram bot, message formatting, callbacks
+  webhook/                          HTTP server for Alertmanager webhooks
   config/                           Config structs + YAML loader
   composer/                         kubectl command generator
   diagnosis/                        Scoring engine + LLM summarizer + redaction
@@ -188,9 +200,60 @@ internal/
   playbook/                         Playbook orchestration
   provider/                         Data collection (K8s, metrics, logs)
   resolver/                         Target resolver (name -> K8s resource)
-configs/                            Sample configs
+configs/                            Sample configs (config.yaml, service_map, playbook_rules)
 deploy/
-  bot/                              K8s deployment manifests
-  monitoring/                       kube-state-metrics, vmagent, vlagent
+  bot/                              K8s deployment manifests for the bot
+  monitoring/                       kube-state-metrics, vmagent, vlagent, alertmanager, vmalert
   test-workloads/                   Test scenarios (OOM, Pending, Rollout, etc.)
+docs/                               Architecture and flow documentation
+```
+
+## LLM Backend Details
+
+### Ollama (free, local)
+
+```bash
+brew install ollama && ollama serve & && ollama pull gemma3:4b
+```
+```yaml
+llm:
+  enabled: true
+  backend: ollama
+  model: gemma3:4b     # or llama3.1:8b, gemma3:12b
+```
+
+### Gemini (free tier)
+
+Get API key at https://aistudio.google.com/apikey
+```yaml
+llm:
+  enabled: true
+  backend: gemini
+  api_key: your-key
+  model: gemini-2.0-flash
+```
+
+### OpenRouter (free models)
+
+Create account at https://openrouter.ai (no credit card needed)
+```yaml
+llm:
+  enabled: true
+  backend: openrouter
+  api_key: your-key
+  model: meta-llama/llama-3.3-70b-instruct:free
+```
+
+Other free models: `google/gemma-3-27b-it:free`, `nvidia/nemotron-3-super-120b-a12b:free`, `openrouter/free` (auto-select). Full list: https://openrouter.ai/collections/free-models
+
+### Custom endpoint
+
+Any OpenAI-compatible API:
+```yaml
+llm:
+  enabled: true
+  backend: custom
+  base_url: http://your-server:8080/v1
+  model: your-model
+  api_key: your-key
 ```

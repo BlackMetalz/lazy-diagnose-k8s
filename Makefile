@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status
+.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts
 
 BINARY=lazy-diagnose-k8s
 IMAGE=lazy-diagnose-k8s:latest
@@ -62,6 +62,9 @@ scenarios-status:
 	@echo "  api-dependency-fail CrashLoopBackOff (connection refused)"
 	@echo "  ml-worker-taint    Pending           (nodeSelector mismatch)"
 	@echo "  db-pvc-pending     Pending           (PVC not bound)"
+
+demo-alerts:
+	@./deploy/test-workloads/demo-webhooks.sh
 
 scenarios-clean:
 	@kubectl delete -f deploy/test-workloads/ --ignore-not-found

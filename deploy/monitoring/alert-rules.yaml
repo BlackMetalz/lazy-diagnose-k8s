@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-rules
+  namespace: monitoring
+data:
+  rules.yml: |
+    groups:
+      - name: kubernetes-pod-alerts
+        interval: 15s
+        rules:
+          # Pod CrashLoopBackOff
+          - alert: KubePodCrashLooping
+            expr: |
+              max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}[5m]) > 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is CrashLooping"
+              description: "Container {{ $labels.container }} in pod {{ $labels.pod }} has been in CrashLoopBackOff for more than 1 minute."
+
+          # Pod not ready
+          - alert: KubePodNotReady
+            expr: |
+              kube_pod_status_phase{phase=~"Pending|Unknown"} > 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready"
+              description: "Pod {{ $labels.pod }} has been in {{ $labels.phase }} phase for more than 2 minutes."
+
+          # Container OOMKilled
+          - alert: ContainerOOMKilled
+            expr: |
+              kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} > 0
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Container {{ $labels.container }} in {{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled"
+              description: "Container {{ $labels.container }} was terminated due to OOM. Check memory limits and application memory usage."
+
+          # High restart count
+          - alert: ContainerHighRestartCount
+            expr: |
+              kube_pod_container_status_restarts_total > 5
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Container {{ $labels.container }} in {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times"
+              description: "Container {{ $labels.container }} has a high restart count, indicating instability."
+
+          # Image pull errors
+          - alert: KubePodImagePullError
+            expr: |
+              max_over_time(kube_pod_container_status_waiting_reason{reason=~"ErrImagePull|ImagePullBackOff"}[5m]) > 0
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has image pull errors"
+              description: "Container {{ $labels.container }} is stuck in {{ $labels.reason }}. Check image name and pull secrets."
+
+          # Deployment replicas mismatch
+          - alert: KubeDeploymentReplicasMismatch
+            expr: |
+              kube_deployment_spec_replicas != kube_deployment_status_ready_replicas
+            for: 3m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has mismatched replicas"
+              description: "Deployment {{ $labels.deployment }} has {{ $value }} desired replicas but not all are ready."

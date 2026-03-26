@@ -10,6 +10,7 @@ import (
 // Config holds all application configuration.
 type Config struct {
 	Telegram   TelegramConfig   `yaml:"telegram"`
+	Webhook    WebhookConfig    `yaml:"webhook"`
 	LLM        LLMConfig        `yaml:"llm"`
 	MCP        MCPConfig        `yaml:"mcp"`
 	Providers  ProvidersConfig  `yaml:"providers"`
@@ -36,6 +37,13 @@ type ProvidersConfig struct {
 type TelegramConfig struct {
 	Token          string   `yaml:"token"`
 	AllowedChatIDs []int64  `yaml:"allowed_chat_ids,omitempty"`
+	AlertChatIDs   []int64  `yaml:"alert_chat_ids,omitempty"` // chats to receive alert notifications
+}
+
+type WebhookConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	Addr        string `yaml:"addr"`         // e.g. ":8080"
+	BearerToken string `yaml:"bearer_token"` // optional auth for incoming webhooks
 }
 
 type MCPConfig struct {

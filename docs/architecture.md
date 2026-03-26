@@ -13,22 +13,25 @@ The bot does not let an LLM decide what to query or how to investigate. Instead,
 ## System Diagram
 
 ```
+┌──────────────────────────────────────┐  ┌─────────────────────────────┐
+│          Alertmanager                │  │        Telegram              │
+│     (fires alert webhook)           │  │    (user sends /check)       │
+└──────────────────┬───────────────────┘  └──────────────┬──────────────┘
+                   │ POST /webhook/alertmanager           │
+                   ▼                                      ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                         Telegram                                  │
-│                     (user sends message)                          │
+│                    Entry Points                                    │
+│                                                                    │
+│  Webhook Server (:8080)          Telegram Adapter (polling)        │
+│  • Parse Alertmanager payload    • Parse message → command+target  │
+│  • Extract K8s target from       • Handle /check, /scan, /deploy   │
+│    alert labels                  • Handle inline button callbacks   │
+│  • Auto-trigger diagnosis        • Send progress + final result    │
+│                                                                    │
+│  Files: internal/webhook/        Files: internal/adapter/telegram/  │
 └──────────────────────┬───────────────────────────────────────────┘
                        │
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    Telegram Adapter                                │
-│                                                                    │
-│  • Parse message → extract command + target                        │
-│  • Send progress updates                                           │
-│  • Format + send final result (HTML)                               │
-│                                                                    │
-│  Files: internal/adapter/telegram/adapter.go, bot.go               │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │
+                       ▼ (same pipeline for both entry points)
               ┌────────┴────────┐
               ▼                 ▼
 ┌─────────────────┐  ┌──────────────────┐
@@ -158,6 +161,7 @@ The bot does not let an LLM decide what to query or how to investigate. Instead,
 │  Evidence: ...                                                     │
 │  Next steps: ...                                                   │
 │  Commands: <pre>kubectl logs ...</pre>                             │
+│  [🔄 Rerun] [📜 Logs] [🔍 Scan NS]  ← inline action buttons      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -165,7 +169,9 @@ The bot does not let an LLM decide what to query or how to investigate. Instead,
 
 | Module | Path | Responsibility |
 |---|---|---|
-| **Telegram Adapter** | `internal/adapter/telegram/` | Parse messages, format output, manage bot lifecycle |
+| **Webhook Server** | `internal/webhook/` | HTTP server for Alertmanager webhooks, parse alerts, extract targets |
+| **Telegram Adapter** | `internal/adapter/telegram/` | Parse messages, format output, inline buttons, callback handler |
+| **K8s Scanner** | `internal/provider/kubernetes/scanner.go` | Scan namespace for unhealthy pods (`/scan` command) |
 | **Intent Classifier** | `internal/domain/intent.go` | Classify user message into crashloop/pending/rollout/unknown |
 | **Target Resolver** | `internal/resolver/` | Map user input to concrete K8s resource |
 | **Playbook Engine** | `internal/playbook/` | Orchestrate the full diagnosis run |
@@ -200,3 +206,18 @@ The summarizer uses the OpenAI chat completions API format, which works with Oll
 ### Direct API calls over MCP
 
 For MVP, the bot uses direct API calls (client-go, HTTP) instead of MCP servers. This is simpler, more reliable, and easier to test. MCP can be added as an alternative provider layer later.
+
+### Two entry points, one pipeline
+
+Both Alertmanager webhooks and user commands feed into the same diagnosis pipeline. This means:
+- Alert-triggered diagnosis uses the same scoring, evidence collection, and formatting as manual `/check`
+- No separate code paths to maintain
+- Alertmanager sends to a lightweight HTTP server (`:8080`), Telegram uses long polling — both run concurrently in the same process
+
+### Proactive over reactive
+
+The primary use case is alert-driven: Alertmanager fires → bot auto-diagnoses → sends to Telegram with action buttons. Manual `/check` and `/scan` are secondary, used for spot-checks or post-deployment verification. The alerting stack (vmalert + Alertmanager) evaluates rules every 15s against VictoriaMetrics data.
+
+### Read-only by design
+
+The bot never writes to the cluster. It only reads pod status, events, metrics, and logs. Suggested commands (rollback, restart) are presented as copy-paste text, not executed automatically. This is a deliberate security boundary — the operator decides whether to act.
