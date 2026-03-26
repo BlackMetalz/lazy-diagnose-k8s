@@ -1,0 +1,36 @@
+# Scenario: Pod Pending do taint mismatch
+# Pod yêu cầu schedule trên node có label gpu=true — kind cluster không có
+#
+# Expected: Pending, events "didn't match Pod's node affinity/selector"
+# Diagnosis: affinity_issue hypothesis
+#
+# Apply:  kubectl apply -f deploy/test-workloads/scenario-taint-mismatch.yaml
+# Remove: kubectl delete -f deploy/test-workloads/scenario-taint-mismatch.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-worker-taint
+  namespace: prod
+  labels:
+    app: ml-worker-taint
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ml-worker-taint
+  template:
+    metadata:
+      labels:
+        app: ml-worker-taint
+    spec:
+      nodeSelector:
+        gpu: "true"
+      containers:
+        - name: worker
+          image: busybox
+          command: ["sleep", "3600"]
+          resources:
+            limits:
+              memory: "32Mi"
+            requests:
+              memory: "16Mi"

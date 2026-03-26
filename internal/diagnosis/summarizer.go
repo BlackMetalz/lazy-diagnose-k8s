@@ -6,29 +6,44 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/lazy-diagnose-k8s/internal/domain"
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 )
 
-// Summarizer uses Claude API to generate natural language diagnosis summaries.
-type Summarizer struct {
-	client anthropic.Client
-	model  anthropic.Model
+// SummarizerConfig configures the LLM summarizer backend.
+type SummarizerConfig struct {
+	// Backend: "ollama", "gemini", "openrouter", "openai", or any OpenAI-compatible endpoint
+	Backend string
+	// BaseURL for the API. Auto-set based on Backend if empty.
+	BaseURL string
+	// APIKey for the provider. Not needed for Ollama.
+	APIKey string
+	// Model name. Auto-set based on Backend if empty.
+	Model string
 }
 
-// NewSummarizer creates a new LLM summarizer.
-// If apiKey is empty, it reads from ANTHROPIC_API_KEY env var.
-func NewSummarizer(apiKey string, model anthropic.Model) *Summarizer {
-	var opts []option.RequestOption
-	if apiKey != "" {
-		opts = append(opts, option.WithAPIKey(apiKey))
-	}
-	client := anthropic.NewClient(opts...) // returns value, not pointer
+// Summarizer uses an LLM to generate natural language diagnosis summaries.
+// Supports any OpenAI-compatible API (Ollama, Gemini, OpenRouter, OpenAI, etc.)
+type Summarizer struct {
+	client openai.Client
+	model  string
+}
 
-	if model == "" {
-		model = anthropic.ModelClaudeHaiku4_5
+// NewSummarizer creates a new LLM summarizer from config.
+func NewSummarizer(cfg SummarizerConfig) *Summarizer {
+	baseURL, model := resolveBackend(cfg)
+
+	var opts []option.RequestOption
+	opts = append(opts, option.WithBaseURL(baseURL))
+	if cfg.APIKey != "" {
+		opts = append(opts, option.WithAPIKey(cfg.APIKey))
+	} else {
+		// Ollama doesn't need auth, but SDK requires non-empty key
+		opts = append(opts, option.WithAPIKey("not-needed"))
 	}
+
+	client := openai.NewClient(opts...)
 
 	return &Summarizer{
 		client: client,
@@ -36,30 +51,83 @@ func NewSummarizer(apiKey string, model anthropic.Model) *Summarizer {
 	}
 }
 
+func resolveBackend(cfg SummarizerConfig) (baseURL, model string) {
+	baseURL = cfg.BaseURL
+	model = cfg.Model
+
+	switch strings.ToLower(cfg.Backend) {
+	case "ollama":
+		if baseURL == "" {
+			baseURL = "http://localhost:11434/v1"
+		}
+		if model == "" {
+			model = "gemma3:4b"
+		}
+	case "gemini":
+		if baseURL == "" {
+			baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
+		}
+		if model == "" {
+			model = "gemini-2.0-flash"
+		}
+	case "openrouter":
+		if baseURL == "" {
+			baseURL = "https://openrouter.ai/api/v1"
+		}
+		if model == "" {
+			model = "google/gemini-2.0-flash-exp:free"
+		}
+	case "openai":
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		if model == "" {
+			model = "gpt-4o-mini"
+		}
+	case "anthropic":
+		if baseURL == "" {
+			baseURL = "https://api.anthropic.com/v1"
+		}
+		if model == "" {
+			model = "claude-haiku-4-5"
+		}
+	default:
+		// Custom endpoint — user provides everything
+		if baseURL == "" {
+			baseURL = "http://localhost:11434/v1"
+		}
+		if model == "" {
+			model = "gemma3:4b"
+		}
+	}
+
+	return baseURL, model
+}
+
 // evidenceSummary is a simplified view of evidence for the LLM prompt.
 type evidenceSummary struct {
-	Target     string              `json:"target"`
-	Intent     string              `json:"intent"`
-	Pods       []podBrief          `json:"pods,omitempty"`
-	Events     []eventBrief        `json:"events,omitempty"`
-	Rollout    *domain.RolloutStatus `json:"rollout,omitempty"`
-	Resources  *domain.ResourceRequests `json:"resources,omitempty"`
-	LogErrors  []domain.LogPattern `json:"log_errors,omitempty"`
-	LogTotal   int                 `json:"log_total_lines"`
-	MemoryUsageMi  *float64       `json:"memory_usage_mi,omitempty"`
-	MemoryLimitMi  *float64       `json:"memory_limit_mi,omitempty"`
-	CPUUsage       *float64       `json:"cpu_usage_cores,omitempty"`
-	CPULimit       *float64       `json:"cpu_limit_cores,omitempty"`
-	RestartRate    *float64       `json:"restart_rate_15m,omitempty"`
-	Hypotheses []hypothesisBrief   `json:"hypotheses"`
-	MissingSources []string        `json:"missing_sources,omitempty"`
+	Target         string                   `json:"target"`
+	Intent         string                   `json:"intent"`
+	Pods           []podBrief               `json:"pods,omitempty"`
+	Events         []eventBrief             `json:"events,omitempty"`
+	Rollout        *domain.RolloutStatus    `json:"rollout,omitempty"`
+	Resources      *domain.ResourceRequests `json:"resources,omitempty"`
+	LogErrors      []domain.LogPattern      `json:"log_errors,omitempty"`
+	LogTotal       int                      `json:"log_total_lines"`
+	MemoryUsageMi  *float64                 `json:"memory_usage_mi,omitempty"`
+	MemoryLimitMi  *float64                 `json:"memory_limit_mi,omitempty"`
+	CPUUsage       *float64                 `json:"cpu_usage_cores,omitempty"`
+	CPULimit       *float64                 `json:"cpu_limit_cores,omitempty"`
+	RestartRate    *float64                 `json:"restart_rate_15m,omitempty"`
+	Hypotheses     []hypothesisBrief        `json:"hypotheses"`
+	MissingSources []string                 `json:"missing_sources,omitempty"`
 }
 
 type podBrief struct {
-	Name         string `json:"name"`
-	Phase        string `json:"phase"`
-	Ready        bool   `json:"ready"`
-	RestartCount int    `json:"restart_count"`
+	Name         string           `json:"name"`
+	Phase        string           `json:"phase"`
+	Ready        bool             `json:"ready"`
+	RestartCount int              `json:"restart_count"`
 	Containers   []containerBrief `json:"containers,omitempty"`
 }
 
@@ -95,10 +163,9 @@ Quy tắc:
 - Tập trung vào nguyên nhân gốc (root cause), không liệt kê triệu chứng dài dòng
 - Giữ summary trong 3-5 câu`
 
-// Summarize generates a natural language summary from evidence and scored hypotheses.
+// Summarize generates a natural language summary using the configured LLM backend.
 func (s *Summarizer) Summarize(ctx context.Context, intent domain.Intent, bundle *domain.EvidenceBundle, result *domain.DiagnosisResult) (string, error) {
-	// Build simplified evidence for prompt
-	evidence := s.buildEvidenceSummary(intent, bundle, result)
+	evidence := buildEvidenceSummary(intent, bundle, result)
 
 	evidenceJSON, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {
@@ -116,44 +183,32 @@ Hãy viết summary ngắn gọn (3-5 câu) giải thích:
 3. Mức độ tin cậy của kết luận
 4. Nếu có dữ liệu thiếu, nói rõ`, evidence.Target, intent, string(evidenceJSON))
 
-	resp, err := s.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     s.model,
-		MaxTokens: 500,
-		Temperature: anthropic.Float(0.3),
-		System: []anthropic.TextBlockParam{
-			{Text: systemPrompt},
+	resp, err := s.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model: s.model,
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(systemPrompt),
+			openai.UserMessage(userPrompt),
 		},
-		Messages: []anthropic.MessageParam{
-			{
-				Role: anthropic.MessageParamRoleUser,
-				Content: []anthropic.ContentBlockParamUnion{
-					{OfText: &anthropic.TextBlockParam{Text: userPrompt}},
-				},
-			},
-		},
+		MaxTokens: openai.Int(500),
+		Temperature: openai.Float(0.3),
 	})
 	if err != nil {
-		return "", fmt.Errorf("claude API: %w", err)
+		return "", fmt.Errorf("LLM API (%s): %w", s.model, err)
 	}
 
-	// Extract text response
-	var text string
-	for _, block := range resp.Content {
-		if block.Type == "text" {
-			text += block.AsText().Text
-		}
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("LLM returned no choices")
 	}
 
-	return strings.TrimSpace(text), nil
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
 }
 
-func (s *Summarizer) buildEvidenceSummary(intent domain.Intent, bundle *domain.EvidenceBundle, result *domain.DiagnosisResult) evidenceSummary {
+func buildEvidenceSummary(intent domain.Intent, bundle *domain.EvidenceBundle, result *domain.DiagnosisResult) evidenceSummary {
 	es := evidenceSummary{
 		Target: bundle.Target.FullName(),
 		Intent: string(intent),
 	}
 
-	// Pods
 	if bundle.K8sFacts != nil {
 		for _, pod := range bundle.K8sFacts.PodStatuses {
 			pb := podBrief{
@@ -174,7 +229,6 @@ func (s *Summarizer) buildEvidenceSummary(intent domain.Intent, bundle *domain.E
 			es.Pods = append(es.Pods, pb)
 		}
 
-		// Events (top 10 warning events)
 		for _, ev := range bundle.K8sFacts.Events {
 			if ev.Type == "Warning" && len(es.Events) < 10 {
 				es.Events = append(es.Events, eventBrief{
@@ -190,13 +244,11 @@ func (s *Summarizer) buildEvidenceSummary(intent domain.Intent, bundle *domain.E
 		es.Resources = bundle.K8sFacts.ResourceRequests
 	}
 
-	// Logs
 	if bundle.LogsFacts != nil {
 		es.LogErrors = bundle.LogsFacts.TopErrors
 		es.LogTotal = bundle.LogsFacts.TotalLines
 	}
 
-	// Metrics
 	if bundle.MetricsFacts != nil {
 		if bundle.MetricsFacts.MemoryUsage != nil {
 			v := *bundle.MetricsFacts.MemoryUsage / (1024 * 1024)
@@ -211,7 +263,6 @@ func (s *Summarizer) buildEvidenceSummary(intent domain.Intent, bundle *domain.E
 		es.RestartRate = bundle.MetricsFacts.RestartRate
 	}
 
-	// Hypotheses
 	if result.PrimaryHypothesis != nil {
 		es.Hypotheses = append(es.Hypotheses, hypothesisBrief{
 			Name:    result.PrimaryHypothesis.Name,
@@ -229,7 +280,6 @@ func (s *Summarizer) buildEvidenceSummary(intent domain.Intent, bundle *domain.E
 		})
 	}
 
-	// Missing sources
 	for _, ps := range bundle.ProviderStatuses {
 		if !ps.Available {
 			es.MissingSources = append(es.MissingSources, ps.Name)

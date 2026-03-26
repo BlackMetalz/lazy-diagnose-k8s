@@ -83,14 +83,21 @@ func main() {
 
 	diagEngine := diagnosis.New(playbookRules).WithLogger(logger)
 
-	// LLM Summarizer (optional — needs ANTHROPIC_API_KEY)
-	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
-	if anthropicKey != "" {
-		summarizer := diagnosis.NewSummarizer(anthropicKey, "claude-haiku-4-5")
+	// LLM Summarizer (optional)
+	// Supports: ollama (free/local), gemini (free tier), openrouter, openai, anthropic
+	// Config via env vars: LLM_BACKEND, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
+	llmBackend := os.Getenv("LLM_BACKEND")
+	if llmBackend != "" {
+		summarizer := diagnosis.NewSummarizer(diagnosis.SummarizerConfig{
+			Backend: llmBackend,
+			BaseURL: os.Getenv("LLM_BASE_URL"),
+			APIKey:  os.Getenv("LLM_API_KEY"),
+			Model:   os.Getenv("LLM_MODEL"),
+		})
 		diagEngine.WithSummarizer(summarizer)
-		logger.Info("LLM summarizer enabled (claude-haiku-4-5)")
+		logger.Info("LLM summarizer enabled", "backend", llmBackend, "model", os.Getenv("LLM_MODEL"))
 	} else {
-		logger.Info("LLM summarizer disabled (set ANTHROPIC_API_KEY to enable)")
+		logger.Info("LLM summarizer disabled (set LLM_BACKEND to enable: ollama/gemini/openrouter/openai)")
 	}
 
 	playbookEngine := playbook.New(collector, diagEngine)

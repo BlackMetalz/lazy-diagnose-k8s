@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lazy-diagnose-k8s
+  namespace: lazy-diagnose
+  labels:
+    app: lazy-diagnose-k8s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lazy-diagnose-k8s
+  template:
+    metadata:
+      labels:
+        app: lazy-diagnose-k8s
+    spec:
+      serviceAccountName: lazy-diagnose-k8s
+      containers:
+        - name: bot
+          image: lazy-diagnose-k8s:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONFIG_PATH
+              value: /etc/lazy-diagnose-k8s/config.yaml
+            - name: SERVICE_MAP_PATH
+              value: /etc/lazy-diagnose-k8s/service_map.yaml
+            - name: PLAYBOOK_RULES_PATH
+              value: /etc/lazy-diagnose-k8s/playbook_rules.yaml
+            - name: VICTORIA_METRICS_URL
+              value: "http://host.docker.internal:8428"
+            - name: VICTORIA_LOGS_URL
+              value: "http://host.docker.internal:9428"
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lazy-diagnose-secrets
+                  key: TELEGRAM_BOT_TOKEN
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lazy-diagnose-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lazy-diagnose-k8s
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: config
+          configMap:
+            name: lazy-diagnose-config

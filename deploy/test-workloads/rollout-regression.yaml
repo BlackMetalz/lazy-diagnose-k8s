@@ -1,0 +1,41 @@
+# Simulate rollout regression: update payment to a bad image
+# Apply this AFTER workloads.yaml to trigger a failed rollout
+#
+# Usage:
+#   kubectl apply -f deploy/test-workloads/rollout-regression.yaml
+#
+# This updates payment deployment to use a non-existent image tag,
+# causing pods to enter ImagePullBackOff while old pods stay running.
+#
+# To rollback:
+#   kubectl rollout undo deployment/payment -n prod
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment
+  namespace: prod
+  labels:
+    app: payment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payment
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: payment
+    spec:
+      containers:
+        - name: payment
+          image: busybox:nonexistent-v2-bad-tag
+          command: ["sleep", "3600"]
+          resources:
+            limits:
+              memory: "64Mi"
+            requests:
+              memory: "32Mi"

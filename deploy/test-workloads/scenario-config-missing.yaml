@@ -1,0 +1,43 @@
+# Scenario: Container crash do thiếu env/config
+# Container cần DATABASE_URL nhưng không được set → exit ngay khi start
+#
+# Expected: CrashLoopBackOff, exit code 1, logs báo "missing required env"
+# Diagnosis: config_env_missing hypothesis
+#
+# Apply:  kubectl apply -f deploy/test-workloads/scenario-config-missing.yaml
+# Remove: kubectl delete -f deploy/test-workloads/scenario-config-missing.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-config-missing
+  namespace: prod
+  labels:
+    app: api-config-missing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-config-missing
+  template:
+    metadata:
+      labels:
+        app: api-config-missing
+    spec:
+      containers:
+        - name: api
+          image: busybox
+          command: ["sh", "-c"]
+          args:
+            - |
+              if [ -z "$DATABASE_URL" ]; then
+                echo "FATAL: missing required env DATABASE_URL"
+                echo "Error: config validation failed - DATABASE_URL is not set"
+                exit 1
+              fi
+              echo "Starting server..."
+              sleep 3600
+          resources:
+            limits:
+              memory: "32Mi"
+            requests:
+              memory: "16Mi"

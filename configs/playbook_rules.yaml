@@ -72,7 +72,7 @@ pending:
         source: k8s
         weight: 60
       - name: no_nodes_available
-        match: "no nodes available"
+        match: "nodes are available|no nodes available|Preemption is not helpful"
         source: k8s
         weight: 30
 
@@ -120,8 +120,12 @@ rollout_regression:
         match: "ready_replicas < desired_replicas"
         source: k8s
         weight: 30
-      - name: restarts_after_deploy
-        match: "restart_count > 0 AND recent_rollout"
+      - name: image_pull_failure
+        match: "ErrImagePull|ImagePullBackOff"
+        source: k8s
+        weight: 30
+      - name: rollout_stuck_events
+        match: "Back-off pulling image|Failed to pull image|ErrImagePull"
         source: k8s
         weight: 20
 

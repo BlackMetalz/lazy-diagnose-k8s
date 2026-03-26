@@ -85,86 +85,103 @@ func isNoiseWord(w string) bool {
 }
 
 // FormatResult formats a DiagnosisResult into a Telegram HTML message.
+// Designed for quick scanning during incidents.
 func FormatResult(result *domain.DiagnosisResult) string {
 	var b strings.Builder
 
-	// Header
-	b.WriteString(fmt.Sprintf("🔍 <b>Diagnosis: %s</b>\n\n", esc(result.Target.FullName())))
+	// ── Header: target + confidence badge ──
+	badge := confidenceBadge(result.Confidence)
+	b.WriteString(fmt.Sprintf("%s <b>%s</b>\n", badge, esc(result.Target.FullName())))
+	b.WriteString("─────────────────────\n\n")
 
-	// Summary
-	b.WriteString(fmt.Sprintf("📋 <b>Kết luận:</b> %s\n\n", esc(result.Summary)))
+	// ── Summary (the most important part) ──
+	b.WriteString(fmt.Sprintf("%s\n\n", esc(result.Summary)))
 
-	// Confidence
-	confidenceEmoji := "🟡"
-	switch result.Confidence {
-	case domain.ConfidenceHigh:
-		confidenceEmoji = "🟢"
-	case domain.ConfidenceLow:
-		confidenceEmoji = "🔴"
-	}
-	b.WriteString(fmt.Sprintf("%s <b>Độ tin cậy:</b> %s\n\n", confidenceEmoji, result.Confidence))
-
-	// Primary hypothesis
+	// ── Key facts (compact) ──
 	if result.PrimaryHypothesis != nil {
-		b.WriteString(fmt.Sprintf("🎯 <b>Nguyên nhân chính:</b> %s (score: %d/%d)\n",
-			esc(result.PrimaryHypothesis.Name),
-			result.PrimaryHypothesis.Score,
-			result.PrimaryHypothesis.MaxScore))
-		if len(result.PrimaryHypothesis.Signals) > 0 {
-			b.WriteString(fmt.Sprintf("    <i>Signals: %s</i>\n", esc(strings.Join(result.PrimaryHypothesis.Signals, ", "))))
+		h := result.PrimaryHypothesis
+		pct := 0
+		if h.MaxScore > 0 {
+			pct = h.Score * 100 / h.MaxScore
 		}
-		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("<b>Nguyên nhân:</b> %s (%d%%)\n", esc(h.Name), pct))
 	}
 
-	// Alternative hypotheses
-	if len(result.AlternativeHypotheses) > 0 {
-		b.WriteString("📊 <b>Nguyên nhân khác:</b>\n")
-		for _, h := range result.AlternativeHypotheses {
-			b.WriteString(fmt.Sprintf("  • %s (score: %d/%d)\n", esc(h.Name), h.Score, h.MaxScore))
+	// Show alternative only if score > 0
+	for _, h := range result.AlternativeHypotheses {
+		if h.Score > 0 {
+			pct := 0
+			if h.MaxScore > 0 {
+				pct = h.Score * 100 / h.MaxScore
+			}
+			b.WriteString(fmt.Sprintf("<b>Cũng có thể:</b> %s (%d%%)\n", esc(h.Name), pct))
 		}
-		b.WriteString("\n")
 	}
+	b.WriteString("\n")
 
-	// Evidence
+	// ── Evidence (compact, max 6 lines) ──
 	if len(result.SupportingEvidence) > 0 {
-		b.WriteString("📎 <b>Bằng chứng:</b>\n")
-		for _, e := range result.SupportingEvidence {
-			b.WriteString(fmt.Sprintf("  • %s\n", esc(e)))
+		b.WriteString("<b>Bằng chứng:</b>\n")
+		limit := len(result.SupportingEvidence)
+		if limit > 6 {
+			limit = 6
+		}
+		for _, e := range result.SupportingEvidence[:limit] {
+			b.WriteString(fmt.Sprintf("  <code>%s</code>\n", esc(truncate(e, 80))))
+		}
+		if len(result.SupportingEvidence) > 6 {
+			b.WriteString(fmt.Sprintf("  <i>... +%d dòng</i>\n", len(result.SupportingEvidence)-6))
 		}
 		b.WriteString("\n")
 	}
 
-	// Recommended steps
+	// ── Next steps ──
 	if len(result.RecommendedSteps) > 0 {
-		b.WriteString("👉 <b>Bước tiếp theo:</b>\n")
+		b.WriteString("<b>Làm gì tiếp:</b>\n")
 		for i, step := range result.RecommendedSteps {
 			b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, esc(step)))
 		}
 		b.WriteString("\n")
 	}
 
-	// Commands
+	// ── Commands (copy-paste ready) ──
 	if len(result.SuggestedCommands) > 0 {
-		b.WriteString("💻 <b>Commands:</b>\n<pre>")
+		b.WriteString("<b>Commands:</b>\n<pre>")
 		for _, cmd := range result.SuggestedCommands {
 			b.WriteString(esc(cmd) + "\n")
 		}
 		b.WriteString("</pre>\n")
 	}
 
-	// Notes
+	// ── Notes (degraded mode warnings) ──
 	if len(result.Notes) > 0 {
-		b.WriteString("📝 <b>Notes:</b>\n")
 		for _, note := range result.Notes {
-			b.WriteString(fmt.Sprintf("  <i>%s</i>\n", esc(note)))
+			b.WriteString(fmt.Sprintf("<i>%s</i>\n", esc(note)))
 		}
-		b.WriteString("\n")
 	}
 
-	// Duration
-	b.WriteString(fmt.Sprintf("⏱ Thời gian: %s", result.Duration.Round(time.Millisecond)))
+	// ── Footer ──
+	b.WriteString(fmt.Sprintf("\n<i>%s · %s</i>", result.Duration.Round(time.Millisecond), result.Confidence))
 
 	return b.String()
+}
+
+func confidenceBadge(c domain.Confidence) string {
+	switch c {
+	case domain.ConfidenceHigh:
+		return "🔴"
+	case domain.ConfidenceMedium:
+		return "🟡"
+	default:
+		return "⚪"
+	}
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // FormatHelpMessage returns the help text for the bot.

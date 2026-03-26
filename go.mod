@@ -3,8 +3,8 @@ module github.com/lazy-diagnose-k8s
 go 1.25.0
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/openai/openai-go v1.12.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
@@ -37,7 +37,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
-	golang.org/x/sync v0.18.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/term v0.37.0 // indirect
 	golang.org/x/text v0.31.0 // indirect

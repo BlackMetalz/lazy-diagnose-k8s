@@ -1,0 +1,44 @@
+# Scenario: Container bị kill do liveness probe fail
+# Container chạy OK nhưng liveness probe check port 8080 — không có gì listen
+# → kubelet kill container → restart loop
+#
+# Expected: Running nhưng restart liên tục, events "Liveness probe failed"
+# Diagnosis: probe_issue hypothesis
+#
+# Apply:  kubectl apply -f deploy/test-workloads/scenario-probe-fail.yaml
+# Remove: kubectl delete -f deploy/test-workloads/scenario-probe-fail.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-probe-fail
+  namespace: prod
+  labels:
+    app: api-probe-fail
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-probe-fail
+  template:
+    metadata:
+      labels:
+        app: api-probe-fail
+    spec:
+      containers:
+        - name: api
+          image: busybox
+          command: ["sh", "-c", "echo 'Server started but not listening on 8080'; sleep 3600"]
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            failureThreshold: 3
+          resources:
+            limits:
+              memory: "32Mi"
+            requests:
+              memory: "16Mi"

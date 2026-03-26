@@ -1,20 +1,20 @@
 # Local Development Setup
 
-Hướng dẫn setup môi trường dev trên Mac M1 (16GB RAM).
+Guide for setting up a dev environment on Mac M1 (16GB RAM).
 
-## Data flow tổng thể
+## Data Flow Overview
 
 ```
 kind cluster
   ├── kube-state-metrics ─── scrape ──→ vmagent ─── remote_write ──→ VictoriaMetrics (host:8428)
   ├── kubelet/cAdvisor   ─── scrape ──┘
   ├── container logs      ─── tail  ──→ vlagent  ─── native push ──→ VictoriaLogs  (host:9428)
-  └── test workloads (checkout, worker, payment)
+  └── test workloads (checkout, worker, payment, ...)
 
-Bot ──→ MCP servers ──→ K8s API / VictoriaMetrics / VictoriaLogs
+Bot ──→ K8s API / VictoriaMetrics / VictoriaLogs
 ```
 
-Không có pipeline này thì MCP server query vào data source trống.
+Without this pipeline, providers query empty data sources.
 
 ---
 
@@ -22,12 +22,12 @@ Không có pipeline này thì MCP server query vào data source trống.
 
 ```bash
 brew install kind kubectl go
-# Docker Desktop cần đang chạy, allocate >= 4GB RAM
+# Docker Desktop must be running, allocate >= 4GB RAM
 ```
 
 ---
 
-## Step 1: Tạo kind cluster
+## Step 1: Create kind cluster
 
 ```bash
 kind create cluster --config deploy/kind-config.yaml
@@ -39,12 +39,12 @@ kubectl get nodes
 
 ---
 
-## Step 2: VictoriaMetrics + VictoriaLogs trên host
+## Step 2: VictoriaMetrics + VictoriaLogs on host
 
-Chạy trên Docker host, nhận data từ trong kind cluster qua `host.docker.internal`.
+Run on Docker host, receive data from inside the kind cluster via `host.docker.internal`.
 
 ```bash
-# VictoriaMetrics — nhận metrics từ vmagent
+# VictoriaMetrics — receives metrics from vmagent
 docker run -d \
   --name victoria-metrics \
   --restart unless-stopped \
@@ -54,7 +54,7 @@ docker run -d \
   -retentionPeriod=7d \
   -selfScrapeInterval=15s
 
-# VictoriaLogs — nhận logs từ vlagent
+# VictoriaLogs — receives logs from vlagent
 docker run -d \
   --name victoria-logs \
   --restart unless-stopped \
@@ -66,7 +66,7 @@ docker run -d \
 **Verify:**
 ```bash
 curl -s 'http://localhost:8428/api/v1/query?query=up' | jq .
-curl -s http://localhost:9428/select/logsql/query -d 'query=*' | head
+curl -s 'http://localhost:9428/select/logsql/query' -d 'query=*' | head
 ```
 
 **UI:**
@@ -77,7 +77,7 @@ curl -s http://localhost:9428/select/logsql/query -d 'query=*' | head
 
 ## Step 3: Metrics pipeline (kube-state-metrics + vmagent)
 
-Deploy vào kind cluster. vmagent scrape metrics rồi remote_write tới VictoriaMetrics trên host.
+Deploy into the kind cluster. vmagent scrapes metrics and remote_writes to VictoriaMetrics on the host.
 
 ```
 kube-state-metrics (pod/deployment/restart metrics)
@@ -90,13 +90,12 @@ VictoriaMetrics (host:8428)
 ```
 
 ```bash
-# Tạo namespace
 kubectl create namespace monitoring
 
-# Deploy kube-state-metrics — expose K8s object metrics (pod status, restart count, ...)
+# kube-state-metrics — exposes K8s object metrics (pod status, restart count, ...)
 kubectl apply -f deploy/monitoring/kube-state-metrics.yaml
 
-# Deploy vmagent — scrape kube-state-metrics + kubelet/cAdvisor, push to VictoriaMetrics
+# vmagent — scrapes kube-state-metrics + kubelet/cAdvisor, pushes to VictoriaMetrics
 kubectl apply -f deploy/monitoring/vmagent.yaml
 
 # Verify
@@ -104,41 +103,36 @@ kubectl -n monitoring get pods
 kubectl -n monitoring logs deployment/vmagent --tail=20
 ```
 
-**Verify metrics đang chảy:**
+**Verify metrics are flowing:**
 ```bash
-# Đợi ~30s cho vmagent scrape xong cycle đầu tiên
+# Wait ~30s for vmagent to complete first scrape cycle
 
-# Check kube-state-metrics data
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=kube_pod_info' | jq '.data.result | length'
-
-# Check container metrics
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=container_memory_usage_bytes' | jq '.data.result | length'
-
-# Restart count
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=kube_pod_container_status_restarts_total' | jq '.data.result[:2]'
 ```
 
-Nếu kết quả > 0 → metrics pipeline hoạt động.
+Results > 0 means the metrics pipeline is working.
 
 ---
 
 ## Step 4: Logs pipeline (vlagent)
 
-Deploy vlagent DaemonSet vào kind. Native log collector của VictoriaMetrics, build riêng cho VictoriaLogs.
+Deploy vlagent DaemonSet into kind. Native log collector from VictoriaMetrics, purpose-built for VictoriaLogs.
 
-Tại sao vlagent thay vì fluent-bit/vector:
-- **4.6x throughput** so với fluent-bit (~143k vs ~31k logs/s)
-- **4.2x ít CPU** hơn fluent-bit, **10.5x ít CPU** hơn vector
-- **28 MiB RAM** — nhẹ nhất trong tất cả collectors
-- Fluent-bit và vector bị **mất log khi file rotation** — vlagent không có issue này
-- Native protocol tới VictoriaLogs, không cần config phức tạp
+Why vlagent over fluent-bit/vector:
+- **4.6x throughput** vs fluent-bit (~143k vs ~31k logs/s)
+- **4.2x less CPU** than fluent-bit, **10.5x less CPU** than vector
+- **28 MiB RAM** — lowest among all tested collectors
+- Fluent-bit and vector **lose logs during file rotation** — vlagent does not
+- Native protocol to VictoriaLogs, minimal config
 
 > Source: [VictoriaMetrics Log Collectors Benchmark 2026](https://victoriametrics.com/blog/log-collectors-benchmark-2026/)
 
 ```
 /var/log/containers/*.log
         ↓ tail + K8s metadata enrichment (pod labels, annotations, node info)
-    vlagent (DaemonSet, mỗi node)
+    vlagent (DaemonSet, one per node)
         ↓ native protocol
 VictoriaLogs (host:9428)
 ```
@@ -151,19 +145,12 @@ kubectl -n monitoring get pods -l app=vlagent
 kubectl -n monitoring logs daemonset/vlagent --tail=20
 ```
 
-**Verify logs đang chảy:**
+**Verify logs are flowing:**
 ```bash
-# Query tất cả logs
 curl -s 'http://localhost:9428/select/logsql/query' -d 'query=*' -d 'limit=5' | jq
-
-# Query logs từ namespace prod
 curl -s 'http://localhost:9428/select/logsql/query' -d 'query=kubernetes.pod_namespace:prod' -d 'limit=5' | jq
-
-# Query error logs
 curl -s 'http://localhost:9428/select/logsql/query' -d 'query=_msg:error OR _msg:Error' -d 'limit=5' | jq
 ```
-
-Nếu có kết quả → logs pipeline hoạt động.
 
 ---
 
@@ -174,47 +161,38 @@ kubectl create namespace prod
 kubectl apply -f deploy/test-workloads/workloads.yaml
 ```
 
-3 workloads tạo ra 3 test scenarios:
+Base workloads create 3 test scenarios:
 
 | Workload | Expected State | Diagnosis Case |
 |---|---|---|
 | `checkout` | CrashLoopBackOff (OOMKilled) | CrashLoop playbook |
-| `worker` | Pending (request 100 CPU, 256Gi RAM) | Pending playbook |
+| `worker` | Pending (requests 100 CPU, 256Gi RAM) | Pending playbook |
 | `payment` | Running (healthy) | Baseline / no issue |
+
+Additional scenarios available — see [deploy/test-workloads/SCENARIOS.md](deploy/test-workloads/SCENARIOS.md).
 
 **Verify:**
 ```bash
 kubectl get pods -n prod
-
-# Expect:
-# checkout-xxx   0/1   CrashLoopBackOff   ...
-# worker-xxx     0/1   Pending            ...
-# payment-xxx    2/2   Running            ...
 ```
 
-**Verify data flow end-to-end:**
+**Verify end-to-end data flow:**
 ```bash
-# Metrics: restart count cho checkout pod
+# Metrics: restart count
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=kube_pod_container_status_restarts_total{namespace="prod"}' | jq '.data.result[] | {pod: .metric.pod, restarts: .value[1]}'
 
-# Metrics: memory usage
-curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=container_memory_usage_bytes{namespace="prod",container!=""}' | jq '.data.result[] | {pod: .metric.pod, container: .metric.container, bytes: .value[1]}'
-
-# Logs: checkout container logs
+# Logs: checkout container
 curl -s 'http://localhost:9428/select/logsql/query' -d 'query=kubernetes.pod_namespace:prod AND kubernetes.container_name:checkout' -d 'limit=10' | jq
-
-# Logs: payment container logs
-curl -s 'http://localhost:9428/select/logsql/query' -d 'query=kubernetes.pod_namespace:prod AND kubernetes.container_name:payment' -d 'limit=10' | jq
 ```
 
 ---
 
-## Step 6: Chạy bot
+## Step 6: Run the bot
 
 ```bash
-# Tạo Telegram bot:
-# 1. Chat @BotFather trên Telegram
-# 2. /newbot → lấy token
+# Create a Telegram bot:
+# 1. Chat @BotFather on Telegram
+# 2. /newbot → copy the token
 
 export TELEGRAM_BOT_TOKEN="your-token-here"
 make run
@@ -222,28 +200,28 @@ make run
 
 ---
 
-## Resource usage ước tính
+## Estimated Resource Usage
 
 | Component | RAM | Note |
 |---|---|---|
 | kind cluster (2 nodes) | ~2GB | control-plane + worker |
-| kube-state-metrics | ~64MB | trong kind |
-| vmagent | ~128MB | trong kind |
+| kube-state-metrics | ~64MB | inside kind |
+| vmagent | ~128MB | inside kind |
 | vlagent | ~28MB per node | DaemonSet, 2 nodes |
 | VictoriaMetrics | ~200MB | Docker host |
 | VictoriaLogs | ~200MB | Docker host |
 | Bot | ~50MB | Go binary |
-| **Total** | **~2.7GB** | M1 Pro 16GB: thoải mái |
+| **Total** | **~2.7GB** | M1 Pro 16GB: plenty of headroom |
 
 ---
 
 ## Cleanup
 
 ```bash
-# Xóa cluster (xóa hết kube-state-metrics, vmagent, vlagent, workloads)
+# Delete cluster (removes kube-state-metrics, vmagent, vlagent, workloads)
 kind delete cluster --name lazy-diag
 
-# Xóa Victoria stack
+# Delete Victoria stack
 docker rm -f victoria-metrics victoria-logs
 docker volume rm victoria-metrics-data victoria-logs-data
 ```
@@ -252,25 +230,23 @@ docker volume rm victoria-metrics-data victoria-logs-data
 
 ## Troubleshooting
 
-**vmagent không push được metrics:**
+**vmagent can't push metrics:**
 ```bash
-# Check logs
 kubectl -n monitoring logs deployment/vmagent
 
 # Common issue: host.docker.internal not resolving
-# Fix: đảm bảo Docker Desktop đang chạy (không phải colima/rancher)
+# Fix: make sure Docker Desktop is running (not colima/rancher)
 kubectl -n monitoring exec deployment/vmagent -- wget -qO- http://host.docker.internal:8428/api/v1/query?query=up
 ```
 
-**vlagent không push được logs:**
+**vlagent can't push logs:**
 ```bash
 kubectl -n monitoring logs daemonset/vlagent
 
-# Test connectivity
 kubectl -n monitoring exec daemonset/vlagent -- wget -qO- http://host.docker.internal:9428/health
 ```
 
-**VictoriaMetrics/Logs container không start:**
+**VictoriaMetrics/Logs container won't start:**
 ```bash
 docker logs victoria-metrics
 docker logs victoria-logs
@@ -280,8 +256,8 @@ lsof -i :8428
 lsof -i :9428
 ```
 
-**kind cluster không start:**
+**kind cluster won't start:**
 ```bash
-docker ps  # Docker Desktop phải đang chạy
+docker ps  # Docker Desktop must be running
 kind get clusters
 ```

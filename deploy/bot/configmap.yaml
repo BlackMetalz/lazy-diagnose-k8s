@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lazy-diagnose-config
+  namespace: lazy-diagnose
+data:
+  config.yaml: |
+    telegram:
+      token: ""
+      allowed_chat_ids: []
+    mcp:
+      kubernetes:
+        timeout: 30
+      logs:
+        timeout: 30
+      metrics:
+        timeout: 30
+
+  service_map.yaml: |
+    services:
+      - name: checkout
+        aliases: [checkout-service, checkout-api]
+        namespace: prod
+        primary_resource: deployment/checkout
+        selectors:
+          app: checkout
+        metrics_job: checkout-api
+        rollout_target: deployment/checkout
+
+      - name: payment
+        aliases: [payment-service, payment-api]
+        namespace: prod
+        primary_resource: deployment/payment
+        selectors:
+          app: payment
+        metrics_job: payment-api
+        rollout_target: deployment/payment
+
+      - name: worker
+        aliases: [background-worker, job-worker]
+        namespace: prod
+        primary_resource: deployment/worker
+        selectors:
+          app: worker
+        metrics_job: worker
+
+  playbook_rules.yaml: |
+    # Copy from configs/playbook_rules.yaml
+    # Or mount as a separate ConfigMap if it changes frequently

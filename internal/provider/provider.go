@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"github.com/lazy-diagnose-k8s/internal/domain"
 )
@@ -26,68 +28,99 @@ type Collector struct {
 	K8s     KubernetesProvider
 	Logs    LogsProvider
 	Metrics MetricsProvider
+	Timeout time.Duration // per-provider timeout, default 30s
 }
 
-// Collect gathers evidence from all available providers.
+// Collect gathers evidence from all providers concurrently.
 // Returns partial results if some providers fail (degraded mode).
 func (c *Collector) Collect(ctx context.Context, target *domain.Target, timeRange domain.TimeRange) *domain.EvidenceBundle {
 	bundle := &domain.EvidenceBundle{
 		Target: target,
 	}
 
+	timeout := c.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
 	// K8s provider
 	if c.K8s != nil {
-		k8sFacts, err := c.K8s.CollectFacts(ctx, target)
-		if err != nil {
-			bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
-				Name:      "kubernetes",
-				Available: false,
-				Error:     err.Error(),
-			})
-		} else {
-			bundle.K8sFacts = k8sFacts
-			bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
-				Name:      "kubernetes",
-				Available: true,
-			})
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			provCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+
+			facts, err := c.K8s.CollectFacts(provCtx, target)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
+					Name: "kubernetes", Available: false, Error: err.Error(), Duration: time.Since(start),
+				})
+			} else {
+				bundle.K8sFacts = facts
+				bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
+					Name: "kubernetes", Available: true, Duration: time.Since(start),
+				})
+			}
+		}()
 	}
 
 	// Logs provider
 	if c.Logs != nil {
-		logsFacts, err := c.Logs.CollectFacts(ctx, target, timeRange)
-		if err != nil {
-			bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
-				Name:      "logs",
-				Available: false,
-				Error:     err.Error(),
-			})
-		} else {
-			bundle.LogsFacts = logsFacts
-			bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
-				Name:      "logs",
-				Available: true,
-			})
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			provCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+
+			facts, err := c.Logs.CollectFacts(provCtx, target, timeRange)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
+					Name: "logs", Available: false, Error: err.Error(), Duration: time.Since(start),
+				})
+			} else {
+				bundle.LogsFacts = facts
+				bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
+					Name: "logs", Available: true, Duration: time.Since(start),
+				})
+			}
+		}()
 	}
 
 	// Metrics provider
 	if c.Metrics != nil {
-		metricsFacts, err := c.Metrics.CollectFacts(ctx, target, timeRange)
-		if err != nil {
-			bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
-				Name:      "metrics",
-				Available: false,
-				Error:     err.Error(),
-			})
-		} else {
-			bundle.MetricsFacts = metricsFacts
-			bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
-				Name:      "metrics",
-				Available: true,
-			})
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			provCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+
+			facts, err := c.Metrics.CollectFacts(provCtx, target, timeRange)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
+					Name: "metrics", Available: false, Error: err.Error(), Duration: time.Since(start),
+				})
+			} else {
+				bundle.MetricsFacts = facts
+				bundle.ProviderStatuses = append(bundle.ProviderStatuses, domain.ProviderStatus{
+					Name: "metrics", Available: true, Duration: time.Since(start),
+				})
+			}
+		}()
 	}
 
+	wg.Wait()
 	return bundle
 }

@@ -224,11 +224,12 @@ func (p *Provider) getRolloutStatus(ctx context.Context, target *domain.Target) 
 	}
 
 	return &domain.RolloutStatus{
-		CurrentRevision:   deploy.Annotations["deployment.kubernetes.io/revision"],
-		DesiredReplicas:   int(*deploy.Spec.Replicas),
-		ReadyReplicas:     int(deploy.Status.ReadyReplicas),
-		UpdatedReplicas:   int(deploy.Status.UpdatedReplicas),
-		AvailableReplicas: int(deploy.Status.AvailableReplicas),
+		CurrentRevision:     deploy.Annotations["deployment.kubernetes.io/revision"],
+		DesiredReplicas:     int(*deploy.Spec.Replicas),
+		ReadyReplicas:       int(deploy.Status.ReadyReplicas),
+		UpdatedReplicas:     int(deploy.Status.UpdatedReplicas),
+		AvailableReplicas:   int(deploy.Status.AvailableReplicas),
+		UnavailableReplicas: int(deploy.Status.UnavailableReplicas),
 	}, nil
 }
 

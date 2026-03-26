@@ -1,0 +1,44 @@
+# Scenario: Container crash do không kết nối được dependency
+# Container cố connect tới postgres:5432 — không tồn tại → connection refused → exit
+#
+# Expected: CrashLoopBackOff, logs báo "connection refused"
+# Diagnosis: dependency_connectivity hypothesis
+#
+# Apply:  kubectl apply -f deploy/test-workloads/scenario-dependency-fail.yaml
+# Remove: kubectl delete -f deploy/test-workloads/scenario-dependency-fail.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-dependency-fail
+  namespace: prod
+  labels:
+    app: api-dependency-fail
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-dependency-fail
+  template:
+    metadata:
+      labels:
+        app: api-dependency-fail
+    spec:
+      containers:
+        - name: api
+          image: busybox
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Connecting to database at postgres-primary:5432..."
+              for i in 1 2 3; do
+                echo "Attempt $i: dial tcp postgres-primary:5432: connection refused"
+                sleep 1
+              done
+              echo "FATAL: could not connect to database after 3 attempts"
+              echo "Error: dial tcp 10.96.0.100:5432: connect: connection refused"
+              exit 1
+          resources:
+            limits:
+              memory: "32Mi"
+            requests:
+              memory: "16Mi"

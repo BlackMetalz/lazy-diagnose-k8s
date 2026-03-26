@@ -1,0 +1,8 @@
+bin/
+.git/
+.claude/
+deploy/
+*.md
+DATA.MD
+PLAN.MD
+SETUP.md

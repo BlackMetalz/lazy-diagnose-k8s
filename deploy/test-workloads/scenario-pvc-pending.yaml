@@ -1,0 +1,54 @@
+# Scenario: Pod Pending do PVC chưa bound
+# Pod mount PVC nhưng không có PV/StorageClass provisioner trong kind
+#
+# Expected: Pending, events "unbound PersistentVolumeClaims"
+# Diagnosis: pvc_binding hypothesis
+#
+# Apply:  kubectl apply -f deploy/test-workloads/scenario-pvc-pending.yaml
+# Remove: kubectl delete -f deploy/test-workloads/scenario-pvc-pending.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-pvc-test
+  namespace: prod
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: non-existent-storage-class
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-pvc-pending
+  namespace: prod
+  labels:
+    app: db-pvc-pending
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-pvc-pending
+  template:
+    metadata:
+      labels:
+        app: db-pvc-pending
+    spec:
+      containers:
+        - name: db
+          image: busybox
+          command: ["sleep", "3600"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            limits:
+              memory: "32Mi"
+            requests:
+              memory: "16Mi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: data-pvc-test

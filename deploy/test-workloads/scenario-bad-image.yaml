@@ -1,0 +1,33 @@
+# Scenario: Image không tồn tại
+# Deploy dùng image tag không có → ErrImagePull / ImagePullBackOff
+#
+# Expected: Pod stuck ở ErrImagePull, events báo "Failed to pull image"
+# Diagnosis: bad_image hypothesis
+#
+# Apply:  kubectl apply -f deploy/test-workloads/scenario-bad-image.yaml
+# Remove: kubectl delete -f deploy/test-workloads/scenario-bad-image.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-bad-image
+  namespace: prod
+  labels:
+    app: api-bad-image
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-bad-image
+  template:
+    metadata:
+      labels:
+        app: api-bad-image
+    spec:
+      containers:
+        - name: api
+          image: nginx:v99.99.99-does-not-exist
+          resources:
+            limits:
+              memory: "32Mi"
+            requests:
+              memory: "16Mi"

@@ -110,11 +110,12 @@ type ResourceCondition struct {
 }
 
 type RolloutStatus struct {
-	CurrentRevision  string `json:"current_revision"`
-	DesiredReplicas  int    `json:"desired_replicas"`
-	ReadyReplicas    int    `json:"ready_replicas"`
-	UpdatedReplicas  int    `json:"updated_replicas"`
-	AvailableReplicas int   `json:"available_replicas"`
+	CurrentRevision    string `json:"current_revision"`
+	DesiredReplicas    int    `json:"desired_replicas"`
+	ReadyReplicas      int    `json:"ready_replicas"`
+	UpdatedReplicas    int    `json:"updated_replicas"`
+	AvailableReplicas  int    `json:"available_replicas"`
+	UnavailableReplicas int   `json:"unavailable_replicas"`
 }
 
 type ResourceRequests struct {

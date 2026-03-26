@@ -2,6 +2,8 @@ package playbook
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lazy-diagnose-k8s/internal/composer"
@@ -46,19 +48,22 @@ func (e *Engine) Run(ctx context.Context, req *domain.DiagnosisRequest, progress
 		timeRange.From = time.Now().Add(-3 * time.Hour)
 	}
 
-	// Step 1: Collect evidence
-	progress("Đang thu thập dữ liệu K8s...")
+	// Step 1: Collect evidence (all providers run concurrently)
+	progress("Đang thu thập dữ liệu từ K8s, logs, metrics...")
 	bundle := e.collector.Collect(ctx, req.Target, timeRange)
 	bundle.CollectedAt = time.Now()
 
-	if bundle.HasK8s() {
-		progress("✓ Đã lấy K8s status/events")
+	// Report what we got
+	var statusParts []string
+	for _, ps := range bundle.ProviderStatuses {
+		if ps.Available {
+			statusParts = append(statusParts, fmt.Sprintf("✓ %s (%s)", ps.Name, ps.Duration.Round(time.Millisecond)))
+		} else {
+			statusParts = append(statusParts, fmt.Sprintf("✗ %s: %s", ps.Name, ps.Error))
+		}
 	}
-	if bundle.HasLogs() {
-		progress("✓ Đã lấy logs")
-	}
-	if bundle.HasMetrics() {
-		progress("✓ Đã lấy metrics")
+	if len(statusParts) > 0 {
+		progress(strings.Join(statusParts, "\n"))
 	}
 
 	// Step 2: Diagnose
