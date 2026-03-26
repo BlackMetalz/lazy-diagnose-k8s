@@ -42,7 +42,7 @@ func (r *Resolver) Resolve(raw string, defaultNamespace string) (*domain.Target,
 	}
 
 	return nil, fmt.Errorf(
-		"không tìm thấy target '%s'. Thử dùng tên deployment/pod chính xác hoặc thêm vào service_map.yaml",
+		"target '%s' not found. Use exact deployment/pod name or add it to service_map.yaml",
 		raw,
 	)
 }

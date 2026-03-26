@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean docker-build docker-load deploy
+.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status
 
 BINARY=lazy-diagnose-k8s
 IMAGE=lazy-diagnose-k8s:latest
@@ -39,3 +39,31 @@ deploy: docker-load
 	@echo "---"
 	@echo "Then deploy:"
 	@echo "  kubectl apply -f deploy/bot/deployment.yaml"
+
+# Test scenarios
+scenarios:
+	@kubectl create namespace prod --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl apply -f deploy/test-workloads/
+	@echo ""
+	@echo "All scenarios deployed. Wait ~30s then check:"
+	@echo "  make scenarios-status"
+
+scenarios-status:
+	@echo "=== Pod Status ==="
+	@kubectl get pods -n prod -o wide
+	@echo ""
+	@echo "=== Expected ==="
+	@echo "  checkout           CrashLoopBackOff  (OOMKilled)"
+	@echo "  worker             Pending           (insufficient resources)"
+	@echo "  payment            Running           (healthy)"
+	@echo "  api-config-missing CrashLoopBackOff  (missing env)"
+	@echo "  api-probe-fail     Running+restarts  (liveness probe fail)"
+	@echo "  api-bad-image      ErrImagePull      (bad image tag)"
+	@echo "  api-dependency-fail CrashLoopBackOff (connection refused)"
+	@echo "  ml-worker-taint    Pending           (nodeSelector mismatch)"
+	@echo "  db-pvc-pending     Pending           (PVC not bound)"
+
+scenarios-clean:
+	@kubectl delete -f deploy/test-workloads/ --ignore-not-found
+	@kubectl delete pvc data-pvc-test -n prod --ignore-not-found
+	@echo "All scenarios removed."

@@ -104,7 +104,7 @@ func FormatResult(result *domain.DiagnosisResult) string {
 		if h.MaxScore > 0 {
 			pct = h.Score * 100 / h.MaxScore
 		}
-		b.WriteString(fmt.Sprintf("<b>Nguyên nhân:</b> %s (%d%%)\n", esc(h.Name), pct))
+		b.WriteString(fmt.Sprintf("<b>Root cause:</b> %s (%d%%)\n", esc(h.Name), pct))
 	}
 
 	// Show alternative only if score > 0
@@ -114,14 +114,14 @@ func FormatResult(result *domain.DiagnosisResult) string {
 			if h.MaxScore > 0 {
 				pct = h.Score * 100 / h.MaxScore
 			}
-			b.WriteString(fmt.Sprintf("<b>Cũng có thể:</b> %s (%d%%)\n", esc(h.Name), pct))
+			b.WriteString(fmt.Sprintf("<b>Also possible:</b> %s (%d%%)\n", esc(h.Name), pct))
 		}
 	}
 	b.WriteString("\n")
 
 	// ── Evidence (compact, max 6 lines) ──
 	if len(result.SupportingEvidence) > 0 {
-		b.WriteString("<b>Bằng chứng:</b>\n")
+		b.WriteString("<b>Evidence:</b>\n")
 		limit := len(result.SupportingEvidence)
 		if limit > 6 {
 			limit = 6
@@ -137,7 +137,7 @@ func FormatResult(result *domain.DiagnosisResult) string {
 
 	// ── Next steps ──
 	if len(result.RecommendedSteps) > 0 {
-		b.WriteString("<b>Làm gì tiếp:</b>\n")
+		b.WriteString("<b>Next steps:</b>\n")
 		for i, step := range result.RecommendedSteps {
 			b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, esc(step)))
 		}
@@ -186,33 +186,42 @@ func truncate(s string, maxLen int) string {
 
 // FormatHelpMessage returns the help text for the bot.
 func FormatHelpMessage() string {
-	return `🤖 <b>lazy-diagnose-k8s Bot</b>
+	return `🤖 <b>lazy-diagnose-k8s</b>
 
-Hỗ trợ diagnosis Kubernetes qua Telegram.
+Kubernetes diagnosis via Telegram. Collects data from K8s, metrics, and logs — returns diagnosis + suggested commands.
 
 <b>Commands:</b>
-/check &lt;target&gt; — Kiểm tra tổng quát
-/diag &lt;target&gt; &lt;mô tả&gt; — Diagnosis với context
-/pod &lt;pod-name&gt; — Kiểm tra pod cụ thể
-/deploy &lt;deployment&gt; — Kiểm tra deployment
+/check &lt;target&gt; — General health check
+/diag &lt;target&gt; &lt;context&gt; — Diagnosis with description
+/pod &lt;pod-name&gt; — Check a specific pod
+/deploy &lt;deployment&gt; — Check rollout status
+/help — This message
 
-<b>Ví dụ:</b>
-• /check checkout
-• /diag payment vừa deploy xong có lỗi 5xx
-• /pod payment-api-7f8b9c-x4k2p
-• /deploy checkout
+<b>Examples:</b>
+• <code>/check checkout</code>
+• <code>/diag payment just deployed, seeing 5xx</code>
+• <code>/pod payment-api-7f8b9c-x4k2p</code>
+• <code>/deploy checkout</code>
 
-<b>Target có thể là:</b>
-• Tên service trong service_map (checkout, payment...)
-• Tên deployment/pod chính xác
-• Format: deployment/checkout hoặc prod/deployment/checkout
+<b>What it detects:</b>
+• CrashLoop — OOM, missing config, dependency fail, probe issue, bad image
+• Pending — insufficient resources, taint/affinity, PVC, quota
+• Rollout regression — failed deploy, image pull error, resource pressure
 
-Bot sẽ tự thu thập dữ liệu từ K8s, logs, metrics và trả về kết luận + command gợi ý.`
+<b>Target can be:</b>
+• Service name from service_map (checkout, payment, worker...)
+• Exact deployment/pod name
+• Path format: <code>deployment/checkout</code> or <code>prod/deployment/checkout</code>
+
+<b>Reading results:</b>
+🔴 High confidence — clear root cause found
+🟡 Medium — likely cause, some data missing
+⚪ Low — inconclusive, check manually`
 }
 
 // FormatError formats an error message for Telegram.
 func FormatError(err error) string {
-	return fmt.Sprintf("❌ <b>Lỗi:</b> %s", esc(err.Error()))
+	return fmt.Sprintf("❌ <b>Error:</b> %s", esc(err.Error()))
 }
 
 // esc escapes HTML special characters for Telegram HTML mode.

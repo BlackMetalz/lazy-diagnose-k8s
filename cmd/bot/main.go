@@ -88,14 +88,15 @@ func main() {
 	// Config via env vars: LLM_BACKEND, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
 	llmBackend := os.Getenv("LLM_BACKEND")
 	if llmBackend != "" {
-		summarizer := diagnosis.NewSummarizer(diagnosis.SummarizerConfig{
+		cfg := diagnosis.SummarizerConfig{
 			Backend: llmBackend,
 			BaseURL: os.Getenv("LLM_BASE_URL"),
 			APIKey:  os.Getenv("LLM_API_KEY"),
 			Model:   os.Getenv("LLM_MODEL"),
-		})
+		}
+		summarizer := diagnosis.NewSummarizer(cfg)
 		diagEngine.WithSummarizer(summarizer)
-		logger.Info("LLM summarizer enabled", "backend", llmBackend, "model", os.Getenv("LLM_MODEL"))
+		logger.Info("LLM summarizer enabled", "backend", summarizer.Backend(), "model", summarizer.ModelName())
 	} else {
 		logger.Info("LLM summarizer disabled (set LLM_BACKEND to enable: ollama/gemini/openrouter/openai)")
 	}

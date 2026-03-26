@@ -69,14 +69,29 @@ func (e *Engine) DiagnoseWithContext(ctx context.Context, intent domain.Intent, 
 
 	// Try LLM summary first, fallback to template
 	if e.summarizer != nil {
+		e.logger.Info("generating summary",
+			"source", "llm",
+			"backend", e.summarizer.Backend(),
+			"model", e.summarizer.ModelName(),
+		)
 		llmSummary, err := e.summarizer.Summarize(ctx, intent, bundle, result)
 		if err != nil {
-			e.logger.Warn("LLM summarizer failed, using template", "error", err)
+			e.logger.Warn("LLM summarizer failed, falling back to template",
+				"backend", e.summarizer.Backend(),
+				"model", e.summarizer.ModelName(),
+				"error", err,
+			)
 			result.Summary = e.summarize(intent, result, bundle)
 		} else {
+			e.logger.Info("summary generated",
+				"source", "llm",
+				"backend", e.summarizer.Backend(),
+				"model", e.summarizer.ModelName(),
+			)
 			result.Summary = llmSummary
 		}
 	} else {
+		e.logger.Info("generating summary", "source", "template")
 		result.Summary = e.summarize(intent, result, bundle)
 	}
 
@@ -338,7 +353,7 @@ func (e *Engine) collectEvidence(bundle *domain.EvidenceBundle) []string {
 
 func (e *Engine) summarize(intent domain.Intent, result *domain.DiagnosisResult, bundle *domain.EvidenceBundle) string {
 	if result.PrimaryHypothesis == nil {
-		return "Không tìm thấy dấu hiệu bất thường rõ ràng. Kiểm tra thủ công bằng commands bên dưới."
+		return "No clear anomaly detected. Check manually using the commands below."
 	}
 
 	var b strings.Builder
@@ -352,7 +367,7 @@ func (e *Engine) summarize(intent domain.Intent, result *domain.DiagnosisResult,
 	case domain.IntentRolloutRegression:
 		b.WriteString(e.summarizeRollout(h, bundle))
 	default:
-		b.WriteString(fmt.Sprintf("Nguyên nhân: %s.", h.Name))
+		b.WriteString(fmt.Sprintf("Root cause: %s.", h.Name))
 	}
 
 	return b.String()
@@ -366,42 +381,42 @@ func (e *Engine) summarizeCrashLoop(h *domain.HypothesisScore, bundle *domain.Ev
 		// Find actual memory numbers
 		if bundle.MetricsFacts != nil && bundle.MetricsFacts.MemoryLimit != nil {
 			limitMi := *bundle.MetricsFacts.MemoryLimit / (1024 * 1024)
-			parts = append(parts, fmt.Sprintf("Container bị OOMKilled — đang dùng hết memory limit (%.0fMi).", limitMi))
+			parts = append(parts, fmt.Sprintf("Container OOMKilled — hitting memory limit (%.0fMi).", limitMi))
 		} else {
-			parts = append(parts, "Container bị OOMKilled — vượt quá memory limit.")
+			parts = append(parts, "Container OOMKilled — exceeded memory limit.")
 		}
 		// Find restart count
 		if bundle.K8sFacts != nil {
 			for _, pod := range bundle.K8sFacts.PodStatuses {
 				if pod.RestartCount > 0 {
-					parts = append(parts, fmt.Sprintf("Đã restart %d lần.", pod.RestartCount))
+					parts = append(parts, fmt.Sprintf("Restarted %d times.", pod.RestartCount))
 					break
 				}
 			}
 		}
-		parts = append(parts, "Cần tăng memory limit hoặc fix memory leak.")
+		parts = append(parts, "Increase memory limit or fix memory leak.")
 
 	case "config_env_missing":
-		parts = append(parts, "Container crash ngay khi start — thiếu config hoặc environment variable.")
+		parts = append(parts, "Container crashes on startup — missing config or environment variable.")
 		if bundle.LogsFacts != nil && len(bundle.LogsFacts.TopErrors) > 0 {
 			parts = append(parts, fmt.Sprintf("Log: \"%s\".", bundle.LogsFacts.TopErrors[0].Sample))
 		}
 
 	case "dependency_connectivity":
-		parts = append(parts, "Container không kết nối được tới dependency (connection refused/timeout).")
+		parts = append(parts, "Container can't reach dependency (connection refused/timeout).")
 		if bundle.LogsFacts != nil && len(bundle.LogsFacts.TopErrors) > 0 {
 			parts = append(parts, fmt.Sprintf("Log: \"%s\".", bundle.LogsFacts.TopErrors[0].Sample))
 		}
 
 	case "probe_issue":
-		parts = append(parts, "Container bị kill do liveness/readiness probe fail.")
-		parts = append(parts, "Kiểm tra probe config — có thể initialDelaySeconds quá ngắn hoặc endpoint không respond.")
+		parts = append(parts, "Container killed by liveness/readiness probe failure.")
+		parts = append(parts, "Check probe config — initialDelaySeconds may be too short or endpoint not responding.")
 
 	case "bad_image":
-		parts = append(parts, "Container không pull được image — sai tag hoặc thiếu credentials.")
+		parts = append(parts, "Container can't pull image — wrong tag or missing pull credentials.")
 
 	default:
-		parts = append(parts, fmt.Sprintf("Container đang CrashLoop. Nguyên nhân: %s.", h.Name))
+		parts = append(parts, fmt.Sprintf("Container in CrashLoop. Root cause: %s.", h.Name))
 	}
 
 	return strings.Join(parts, " ")
@@ -412,29 +427,29 @@ func (e *Engine) summarizePending(h *domain.HypothesisScore, bundle *domain.Evid
 
 	switch h.ID {
 	case "insufficient_resources":
-		parts = append(parts, "Pod không schedule được — cluster thiếu tài nguyên.")
+		parts = append(parts, "Pod can't be scheduled — insufficient cluster resources.")
 		if bundle.K8sFacts != nil && bundle.K8sFacts.ResourceRequests != nil {
 			rr := bundle.K8sFacts.ResourceRequests
-			parts = append(parts, fmt.Sprintf("Pod request: CPU=%s, Memory=%s.", rr.CPURequest, rr.MemoryRequest))
+			parts = append(parts, fmt.Sprintf("Pod requests: CPU=%s, Memory=%s.", rr.CPURequest, rr.MemoryRequest))
 		}
-		parts = append(parts, "Scale up cluster hoặc giảm resource requests.")
+		parts = append(parts, "Scale up cluster or reduce resource requests.")
 
 	case "taint_mismatch":
-		parts = append(parts, "Pod không schedule được — node có taint mà pod không tolerate.")
-		parts = append(parts, "Thêm toleration hoặc remove taint khỏi node.")
+		parts = append(parts, "Pod can't be scheduled — node has taint that pod doesn't tolerate.")
+		parts = append(parts, "Add toleration or remove taint from node.")
 
 	case "affinity_issue":
-		parts = append(parts, "Pod không schedule được — không có node nào match affinity/nodeSelector.")
+		parts = append(parts, "Pod can't be scheduled — no node matches affinity/nodeSelector.")
 
 	case "pvc_binding":
-		parts = append(parts, "Pod stuck Pending — PersistentVolumeClaim chưa bound được.")
-		parts = append(parts, "Kiểm tra PV available và StorageClass provisioner.")
+		parts = append(parts, "Pod stuck Pending — PersistentVolumeClaim can't bind.")
+		parts = append(parts, "Check PV availability and StorageClass provisioner.")
 
 	case "quota_issue":
-		parts = append(parts, "Pod bị block bởi ResourceQuota — namespace đã hết quota.")
+		parts = append(parts, "Pod blocked by ResourceQuota — namespace quota exhausted.")
 
 	default:
-		parts = append(parts, fmt.Sprintf("Pod Pending. Nguyên nhân: %s.", h.Name))
+		parts = append(parts, fmt.Sprintf("Pod Pending. Root cause: %s.", h.Name))
 	}
 
 	return strings.Join(parts, " ")
@@ -445,7 +460,7 @@ func (e *Engine) summarizeRollout(h *domain.HypothesisScore, bundle *domain.Evid
 
 	switch h.ID {
 	case "release_regression":
-		parts = append(parts, "Rollout mới có vấn đề.")
+		parts = append(parts, "New rollout has issues.")
 		if bundle.K8sFacts != nil && bundle.K8sFacts.RolloutStatus != nil {
 			rs := bundle.K8sFacts.RolloutStatus
 			parts = append(parts, fmt.Sprintf("Revision %s: %d/%d pods ready, %d unavailable.",
@@ -456,26 +471,26 @@ func (e *Engine) summarizeRollout(h *domain.HypothesisScore, bundle *domain.Evid
 			for _, pod := range bundle.K8sFacts.PodStatuses {
 				for _, cs := range pod.ContainerStatuses {
 					if cs.Reason == "ErrImagePull" || cs.Reason == "ImagePullBackOff" {
-						parts = append(parts, "New pod bị ImagePullBackOff — kiểm tra image tag.")
+						parts = append(parts, "New pod stuck in ImagePullBackOff — check image tag.")
 						goto doneImageCheck
 					}
 				}
 			}
 		}
 	doneImageCheck:
-		parts = append(parts, "Cân nhắc rollback nếu service bị ảnh hưởng.")
+		parts = append(parts, "Consider rollback if service is impacted.")
 
 	case "dependency_exposed":
-		parts = append(parts, "Release mới có thể đã expose bug dependency có sẵn.")
+		parts = append(parts, "New release may have exposed a pre-existing dependency bug.")
 
 	case "traffic_spike_unrelated":
-		parts = append(parts, "Có dấu hiệu traffic spike — có thể không liên quan tới release.")
+		parts = append(parts, "Traffic spike detected — may be unrelated to the release.")
 
 	case "resource_pressure":
-		parts = append(parts, "Release mới tăng resource consumption — container đang chạm limit.")
+		parts = append(parts, "New release increased resource consumption — container hitting limits.")
 
 	default:
-		parts = append(parts, fmt.Sprintf("Rollout có vấn đề. Nguyên nhân: %s.", h.Name))
+		parts = append(parts, fmt.Sprintf("Rollout issue detected. Root cause: %s.", h.Name))
 	}
 
 	return strings.Join(parts, " ")
@@ -485,14 +500,14 @@ func (e *Engine) collectNotes(bundle *domain.EvidenceBundle) []string {
 	var notes []string
 	for _, ps := range bundle.ProviderStatuses {
 		if !ps.Available {
-			notes = append(notes, fmt.Sprintf("⚠ Provider '%s' không available: %s. Kết quả có thể không đầy đủ.", ps.Name, ps.Error))
+			notes = append(notes, fmt.Sprintf("⚠ Provider '%s' unavailable: %s. Results may be incomplete.", ps.Name, ps.Error))
 		}
 	}
 	if !bundle.HasMetrics() {
-		notes = append(notes, "Thiếu dữ liệu metrics. Confidence đã được hạ.")
+		notes = append(notes, "Missing metrics data. Confidence degraded.")
 	}
 	if !bundle.HasLogs() {
-		notes = append(notes, "Thiếu dữ liệu logs. Confidence đã được hạ.")
+		notes = append(notes, "Missing logs data. Confidence degraded.")
 	}
 	return notes
 }

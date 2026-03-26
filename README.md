@@ -136,18 +136,18 @@ kubectl apply -f deploy/bot/deployment.yaml
 
 ## Test Scenarios
 
-Pre-built K8s failure scenarios for testing. See [deploy/test-workloads/SCENARIOS.md](deploy/test-workloads/SCENARIOS.md) for full details.
+9 pre-built K8s failure scenarios covering CrashLoop, Pending, and Rollout regression. See [deploy/test-workloads/SCENARIOS.md](deploy/test-workloads/SCENARIOS.md) for full details on each scenario.
 
 ```bash
-# Deploy all scenarios
-kubectl apply -f deploy/test-workloads/
+make scenarios          # Deploy all scenarios to namespace prod
+make scenarios-status   # Check pod status vs expected state
+make scenarios-clean    # Remove all scenarios
+```
 
-# Test individual scenarios
+Or deploy individually:
+```bash
 kubectl apply -f deploy/test-workloads/scenario-config-missing.yaml
 # then: /check api-config-missing
-
-# Clean up
-kubectl delete -f deploy/test-workloads/
 ```
 
 | Scenario | Command | Expected |

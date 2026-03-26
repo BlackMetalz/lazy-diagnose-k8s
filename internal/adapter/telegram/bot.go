@@ -94,7 +94,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	}
 
 	if parsed.Target == "" {
-		b.sendMessage(chatID, "Thiếu target. Ví dụ: /check checkout hoặc /diag payment bị lỗi")
+		b.sendMessage(chatID, "Missing target. Example: /check checkout or /diag payment seeing errors")
 		return
 	}
 
@@ -129,13 +129,13 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	}
 
 	// Send initial progress message
-	progressMsg := b.sendMessage(chatID, fmt.Sprintf("🔍 Đang diagnosis %s...\nIntent: %s", target.FullName(), intent))
+	progressMsg := b.sendMessage(chatID, fmt.Sprintf("🔍 Diagnosing %s...\nIntent: %s", target.FullName(), intent))
 
 	// Progress callback updates the message
 	progress := func(text string) {
 		b.logger.Info("progress", "request_id", req.ID, "status", text)
 		if progressMsg != 0 {
-			b.editMessage(chatID, progressMsg, fmt.Sprintf("🔍 Đang diagnosis %s...\n%s", target.FullName(), text))
+			b.editMessage(chatID, progressMsg, fmt.Sprintf("🔍 Diagnosing %s...\n%s", target.FullName(), text))
 		}
 	}
 

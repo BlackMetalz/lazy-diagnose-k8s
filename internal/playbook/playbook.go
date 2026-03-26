@@ -49,7 +49,7 @@ func (e *Engine) Run(ctx context.Context, req *domain.DiagnosisRequest, progress
 	}
 
 	// Step 1: Collect evidence (all providers run concurrently)
-	progress("Đang thu thập dữ liệu từ K8s, logs, metrics...")
+	progress("Collecting data from K8s, logs, metrics...")
 	bundle := e.collector.Collect(ctx, req.Target, timeRange)
 	bundle.CollectedAt = time.Now()
 
@@ -67,7 +67,7 @@ func (e *Engine) Run(ctx context.Context, req *domain.DiagnosisRequest, progress
 	}
 
 	// Step 2: Diagnose
-	progress("Đang phân tích...")
+	progress("Analyzing...")
 	result := e.diagnosis.DiagnoseWithContext(ctx, req.Intent, bundle)
 	result.RequestID = req.ID
 
@@ -85,7 +85,7 @@ func (e *Engine) recommendSteps(intent domain.Intent, result *domain.DiagnosisRe
 	var steps []string
 
 	if result.PrimaryHypothesis == nil {
-		return []string{"Kiểm tra thủ công bằng các command bên dưới", "Xem logs và events để tìm thêm manh mối"}
+		return []string{"Check manually using commands below", "Inspect logs and events for clues"}
 	}
 
 	switch intent {
@@ -93,32 +93,32 @@ func (e *Engine) recommendSteps(intent domain.Intent, result *domain.DiagnosisRe
 		switch result.PrimaryHypothesis.ID {
 		case "oom_resource":
 			steps = []string{
-				"Tăng memory limit cho container",
-				"Kiểm tra memory leak trong application",
-				"Xem xét optimize memory usage",
+				"Increase memory limit for the container",
+				"Check application for memory leaks",
+				"Consider optimizing memory usage",
 			}
 		case "config_env_missing":
 			steps = []string{
-				"Kiểm tra ConfigMap/Secret đã được mount đúng chưa",
-				"Verify environment variables trong deployment spec",
+				"Verify ConfigMap/Secret is mounted correctly",
+				"Check environment variables in deployment spec",
 			}
 		case "dependency_connectivity":
 			steps = []string{
-				"Kiểm tra service dependency có đang healthy không",
-				"Verify network policy cho phép traffic",
-				"Check DNS resolution trong cluster",
+				"Check if dependency service is healthy",
+				"Verify network policies allow traffic",
+				"Check DNS resolution in the cluster",
 			}
 		case "probe_issue":
 			steps = []string{
 				"Review liveness/readiness probe config",
-				"Tăng initialDelaySeconds nếu app startup chậm",
-				"Kiểm tra probe endpoint có respond đúng không",
+				"Increase initialDelaySeconds if app starts slowly",
+				"Verify probe endpoint is responding",
 			}
 		case "bad_image":
 			steps = []string{
-				"Verify image tag tồn tại trong registry",
-				"Kiểm tra imagePullSecrets",
-				"Kiểm tra network connectivity tới registry",
+				"Verify image tag exists in the registry",
+				"Check imagePullSecrets configuration",
+				"Verify network connectivity to the registry",
 			}
 		}
 
@@ -126,19 +126,19 @@ func (e *Engine) recommendSteps(intent domain.Intent, result *domain.DiagnosisRe
 		switch result.PrimaryHypothesis.ID {
 		case "insufficient_resources":
 			steps = []string{
-				"Scale down workload khác hoặc scale up cluster",
-				"Giảm resource requests nếu hợp lý",
-				"Kiểm tra resource quota của namespace",
+				"Scale down other workloads or scale up the cluster",
+				"Reduce resource requests if reasonable",
+				"Check namespace resource quotas",
 			}
 		case "taint_mismatch":
 			steps = []string{
-				"Thêm toleration phù hợp vào pod spec",
-				"Hoặc remove taint khỏi node nếu không cần thiết",
+				"Add matching toleration to pod spec",
+				"Or remove taint from node if not needed",
 			}
 		case "pvc_binding":
 			steps = []string{
-				"Kiểm tra PersistentVolume có available không",
-				"Verify StorageClass tồn tại và provisioner hoạt động",
+				"Check if PersistentVolume is available",
+				"Verify StorageClass exists and provisioner is working",
 			}
 		}
 
@@ -146,25 +146,25 @@ func (e *Engine) recommendSteps(intent domain.Intent, result *domain.DiagnosisRe
 		switch result.PrimaryHypothesis.ID {
 		case "release_regression":
 			steps = []string{
-				"Rollback về revision trước bằng command bên dưới",
-				"Kiểm tra diff giữa revision hiện tại và trước đó",
-				"Review application changes trong release mới",
+				"Rollback to previous revision using command below",
+				"Diff current vs previous revision",
+				"Review application changes in the new release",
 			}
 		case "dependency_exposed":
 			steps = []string{
-				"Kiểm tra dependency services có healthy không",
-				"Release mới có thể đã expose một bug dependency có sẵn",
+				"Check if dependency services are healthy",
+				"New release may have exposed a pre-existing dependency bug",
 			}
 		case "resource_pressure":
 			steps = []string{
-				"Tăng resource limits cho release mới",
-				"Kiểm tra xem release mới có tăng resource consumption không",
+				"Increase resource limits for the new release",
+				"Check if new release increased resource consumption",
 			}
 		}
 	}
 
 	if len(steps) == 0 {
-		steps = []string{"Kiểm tra thủ công bằng các command bên dưới"}
+		steps = []string{"Check manually using commands below"}
 	}
 
 	return steps

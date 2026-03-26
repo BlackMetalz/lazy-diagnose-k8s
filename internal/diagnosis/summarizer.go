@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lazy-diagnose-k8s/internal/domain"
 	"github.com/openai/openai-go"
@@ -26,9 +27,16 @@ type SummarizerConfig struct {
 // Summarizer uses an LLM to generate natural language diagnosis summaries.
 // Supports any OpenAI-compatible API (Ollama, Gemini, OpenRouter, OpenAI, etc.)
 type Summarizer struct {
-	client openai.Client
-	model  string
+	client  openai.Client
+	model   string
+	backend string
 }
+
+// Backend returns the resolved backend name.
+func (s *Summarizer) Backend() string { return s.backend }
+
+// ModelName returns the resolved model name.
+func (s *Summarizer) ModelName() string { return s.model }
 
 // NewSummarizer creates a new LLM summarizer from config.
 func NewSummarizer(cfg SummarizerConfig) *Summarizer {
@@ -46,16 +54,17 @@ func NewSummarizer(cfg SummarizerConfig) *Summarizer {
 	client := openai.NewClient(opts...)
 
 	return &Summarizer{
-		client: client,
-		model:  model,
+		client:  client,
+		model:   model,
+		backend: strings.ToLower(strings.TrimSpace(cfg.Backend)),
 	}
 }
 
 func resolveBackend(cfg SummarizerConfig) (baseURL, model string) {
-	baseURL = cfg.BaseURL
-	model = cfg.Model
+	baseURL = strings.TrimSpace(cfg.BaseURL)
+	model = strings.TrimSpace(cfg.Model)
 
-	switch strings.ToLower(cfg.Backend) {
+	switch strings.ToLower(strings.TrimSpace(cfg.Backend)) {
 	case "ollama":
 		if baseURL == "" {
 			baseURL = "http://localhost:11434/v1"
@@ -153,15 +162,15 @@ type hypothesisBrief struct {
 	Signals []string `json:"matched_signals"`
 }
 
-const systemPrompt = `Bạn là chuyên gia Kubernetes diagnosis. Bạn nhận evidence bundle từ một hệ thống monitoring tự động và cần giải thích kết quả cho người vận hành.
+const systemPrompt = `You are a Kubernetes diagnosis expert. You receive an evidence bundle from an automated monitoring system and need to explain the results to an operator.
 
-Quy tắc:
-- Viết tiếng Việt, ngắn gọn, dễ hiểu
-- Nói rõ: đây là QUAN SÁT (fact) hay SUY LUẬN (inference)
-- Nếu dữ liệu thiếu (missing_sources), nói rõ và hạ mức tin cậy
-- Không bịa thêm thông tin ngoài evidence
-- Tập trung vào nguyên nhân gốc (root cause), không liệt kê triệu chứng dài dòng
-- Giữ summary trong 3-5 câu`
+Rules:
+- Write concise, clear English
+- Distinguish between OBSERVATIONS (facts) and INFERENCES (conclusions)
+- If data is missing (missing_sources), note it and lower confidence
+- Do not invent information beyond the evidence
+- Focus on root cause, not listing symptoms
+- Keep summary to 3-5 sentences`
 
 // Summarize generates a natural language summary using the configured LLM backend.
 func (s *Summarizer) Summarize(ctx context.Context, intent domain.Intent, bundle *domain.EvidenceBundle, result *domain.DiagnosisResult) (string, error) {
@@ -172,28 +181,47 @@ func (s *Summarizer) Summarize(ctx context.Context, intent domain.Intent, bundle
 		return "", fmt.Errorf("marshal evidence: %w", err)
 	}
 
-	userPrompt := fmt.Sprintf(`Đây là evidence bundle từ diagnosis tự động cho %s (intent: %s).
+	userPrompt := fmt.Sprintf(`Evidence bundle from automated diagnosis for %s (intent: %s).
 
 Evidence:
 %s
 
-Hãy viết summary ngắn gọn (3-5 câu) giải thích:
-1. Chuyện gì đang xảy ra
-2. Nguyên nhân chính (dựa trên hypothesis score cao nhất)
-3. Mức độ tin cậy của kết luận
-4. Nếu có dữ liệu thiếu, nói rõ`, evidence.Target, intent, string(evidenceJSON))
+Write a concise summary (3-5 sentences) explaining:
+1. What is happening
+2. Root cause (based on highest-scored hypothesis)
+3. Confidence level
+4. If any data is missing, note it`, evidence.Target, intent, string(evidenceJSON))
 
-	resp, err := s.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: s.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(systemPrompt),
 			openai.UserMessage(userPrompt),
 		},
-		MaxTokens: openai.Int(500),
+		MaxTokens:   openai.Int(500),
 		Temperature: openai.Float(0.3),
-	})
-	if err != nil {
-		return "", fmt.Errorf("LLM API (%s): %w", s.model, err)
+	}
+
+	// Retry with backoff for rate limiting (429)
+	var resp *openai.ChatCompletion
+	var lastErr error
+	for attempt := range 3 {
+		resp, lastErr = s.client.Chat.Completions.New(ctx, params)
+		if lastErr == nil {
+			break
+		}
+		if !strings.Contains(lastErr.Error(), "429") {
+			break // non-retryable error
+		}
+		wait := time.Duration(2<<attempt) * time.Second // 2s, 4s, 8s
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("LLM API (%s): %w", s.model, lastErr)
 	}
 
 	if len(resp.Choices) == 0 {
