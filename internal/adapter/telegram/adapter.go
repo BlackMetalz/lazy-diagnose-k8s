@@ -114,15 +114,40 @@ func isNoiseWord(w string) bool {
 	return noise[strings.ToLower(w)]
 }
 
-// FormatResult formats a DiagnosisResult into a Telegram HTML message.
-// Designed for quick scanning during incidents.
+// FormatResult formats a DiagnosisResult with a header (for /check commands).
 func FormatResult(result *domain.DiagnosisResult) string {
-	var b strings.Builder
-
-	// ── Header: target + confidence badge ──
+	// Header: badge + first pod name (not deployment path)
 	badge := confidenceBadge(result.Confidence)
-	b.WriteString(fmt.Sprintf("%s <b>%s</b>\n", badge, esc(result.Target.FullName())))
-	b.WriteString("─────────────────────\n\n")
+	podName := firstPodName(result)
+	header := fmt.Sprintf("%s <b>%s</b>\n─────────────────────\n\n", badge, esc(podName))
+	return header + formatResultBody(result)
+}
+
+// FormatResultCompact formats a DiagnosisResult without header (for callbacks where Re: is prepended).
+func FormatResultCompact(result *domain.DiagnosisResult) string {
+	badge := confidenceBadge(result.Confidence)
+	return badge + " " + formatResultBody(result)
+}
+
+// firstPodName extracts the first pod name from evidence, or falls back to target name.
+func firstPodName(result *domain.DiagnosisResult) string {
+	for _, e := range result.SupportingEvidence {
+		// Evidence lines start with "Pod <name>:"
+		if len(e) > 4 && e[:4] == "Pod " {
+			if idx := strings.Index(e, ":"); idx > 0 {
+				return e[4:idx]
+			}
+		}
+	}
+	// Fallback to target resource name
+	if result.Target != nil {
+		return result.Target.ResourceName
+	}
+	return "unknown"
+}
+
+func formatResultBody(result *domain.DiagnosisResult) string {
+	var b strings.Builder
 
 	// ── Summary (the most important part) ──
 	b.WriteString(fmt.Sprintf("%s\n\n", esc(result.Summary)))
@@ -221,27 +246,42 @@ func FormatScanResult(namespace string, results []ScanResult, duration time.Dura
 	b.WriteString(fmt.Sprintf("🔍 <b>Scan: %s</b> — %d issue(s)\n", esc(namespace), len(results)))
 	b.WriteString("─────────────────────\n\n")
 
+	showNs := namespace == "all" // show namespace per pod when scanning all
+
 	for _, r := range results {
 		icon := reasonIcon(r.Reason)
-		owner := ""
-		if r.OwnerName != "" {
-			owner = fmt.Sprintf(" (%s/%s)", r.OwnerKind, r.OwnerName)
+		podLabel := r.Name
+		if showNs {
+			podLabel = r.Namespace + "/" + r.Name
 		}
 		restartInfo := ""
 		if r.Restarts > 0 {
-			restartInfo = fmt.Sprintf(", %dx restarts", r.Restarts)
+			restartInfo = fmt.Sprintf(" · %dx restarts", r.Restarts)
 		}
-		b.WriteString(fmt.Sprintf("%s <code>%s</code>%s\n   %s%s\n\n",
-			icon, esc(r.Name), esc(owner), esc(r.Reason), esc(restartInfo)))
+		b.WriteString(fmt.Sprintf("%s <code>%s</code>\n   %s%s\n\n",
+			icon, esc(podLabel), esc(r.Reason), esc(restartInfo)))
 	}
 
-	b.WriteString("<b>Diagnose a specific target:</b>\n")
-	// Suggest command for the first unhealthy pod's owner
-	if len(results) > 0 && results[0].OwnerName != "" {
-		b.WriteString(fmt.Sprintf("  <code>/check %s -n %s</code>\n", esc(results[0].OwnerName), esc(namespace)))
-	}
-	if len(results) > 1 && results[1].OwnerName != "" && results[1].OwnerName != results[0].OwnerName {
-		b.WriteString(fmt.Sprintf("  <code>/check %s -n %s</code>\n", esc(results[1].OwnerName), esc(namespace)))
+	// Suggest check commands
+	b.WriteString("<b>Diagnose:</b>\n")
+	suggested := 0
+	seen := make(map[string]bool)
+	for _, r := range results {
+		name := r.Name
+		ns := r.Namespace
+		if ns == "" {
+			ns = namespace
+		}
+		key := ns + "/" + name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		b.WriteString(fmt.Sprintf("  <code>/check %s -n %s</code>\n", esc(name), esc(ns)))
+		suggested++
+		if suggested >= 3 {
+			break
+		}
 	}
 
 	b.WriteString(fmt.Sprintf("\n<i>%s</i>", duration.Round(time.Millisecond)))

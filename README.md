@@ -5,14 +5,18 @@ Telegram ChatOps bot for Kubernetes diagnosis. Receives alerts from Alertmanager
 ## How It Works
 
 ```
-Alertmanager ──webhook──→ Bot :8080 ──→ auto-diagnose ──→ Telegram (alert + diagnosis + buttons)
-User ──────── /check ───→ Bot ────────→ diagnose ──────→ Telegram (diagnosis + buttons)
-User ──────── /scan ────→ Bot ────────→ find issues ───→ Telegram (unhealthy pod list)
+Alertmanager ──webhook──→ Bot :8080 ──→ Telegram: alert notification
+                                         [🤖 AI] [📊 Static] [📜 Logs]
+                                              ↓ user clicks
+                                         Bot runs investigation → result
+
+User ──────── /check ───→ Bot → static analysis → result + [🤖 AI] [📊 Static] [📜 Logs] [🔍 Scan]
+User ──────── /scan ────→ Bot → find unhealthy pods → list
 ```
 
-Two entry points, same diagnosis pipeline:
-- **Proactive**: Alertmanager fires → bot auto-diagnoses → sends to Telegram with action buttons
-- **Reactive**: User sends `/check` or `/scan` → bot diagnoses → returns result
+- **Alert mode**: Alertmanager fires → bot sends notification → user clicks action button → investigation runs
+- **Manual mode**: User sends `/check` or `/scan` → bot runs analysis → returns result with action buttons
+- **No auto-diagnosis on alerts** — saves LLM tokens, user decides what to investigate
 
 ## Quick Start
 
@@ -91,13 +95,24 @@ kubectl apply -f deploy/monitoring/vmalert.yaml
 
 ## Inline Action Buttons
 
-Diagnosis results (from alerts or `/check`) include action buttons:
+When an alert arrives, the bot sends a notification with 3 action buttons — **no auto-diagnosis**, you choose what to run:
+
+| Button | What it does | Uses LLM? |
+|---|---|---|
+| **🤖 AI Investigation** | Collects evidence, sends to LLM for free-form analysis | Yes |
+| **📊 Static Analysis** | Runs deterministic playbook scoring (rule-based) | No |
+| **📜 Logs** | Queries VictoriaLogs, shows raw container logs (last 30 min) | No |
+
+After any action, a second row of buttons appears for follow-up:
 
 | Button | Action |
 |---|---|
-| 🔄 **Rerun** | Re-diagnose the same target |
-| 📜 **Logs** | Show log commands for the target |
-| 🔍 **Scan NS** | Scan the entire namespace for other issues |
+| 🤖 **AI** | Run AI Investigation |
+| 📊 **Static** | Run Static Analysis |
+| 📜 **Logs** | Show logs |
+| 🔍 **Scan NS** | Scan entire namespace |
+
+The `/check` command also shows these buttons after returning results.
 
 ## LLM Summarizer
 

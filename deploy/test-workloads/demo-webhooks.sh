@@ -1,232 +1,88 @@
 #!/bin/bash
-# Demo webhook requests to test Alertmanager → Bot integration
-# Usage: ./deploy/test-workloads/demo-webhooks.sh
+# Send a random firing alert from Alertmanager to the bot webhook.
+# If no alerts are firing, prints a message and exits.
 #
-# Prerequisites: bot must be running with webhook.enabled: true (default :8080)
+# Usage:
+#   ./deploy/test-workloads/demo-webhooks.sh          # random alert
+#   ./deploy/test-workloads/demo-webhooks.sh --all     # all firing alerts
+#
+# Prerequisites:
+#   - Bot running with webhook.enabled: true (default :8080)
+#   - Alertmanager port-forwarded: kubectl -n monitoring port-forward svc/alertmanager 9093:9093
 
 BOT_URL="${BOT_URL:-http://localhost:8080}"
+AM_URL="${AM_URL:-http://localhost:9093}"
 
-echo "=== Sending demo alerts to $BOT_URL/webhook/alertmanager ==="
+# Check bot health
+if ! curl -sf "$BOT_URL/healthz" > /dev/null 2>&1; then
+  echo "❌ Bot not reachable at $BOT_URL/healthz"
+  echo "   Make sure bot is running with: make run"
+  exit 1
+fi
+
+# Fetch firing alerts from Alertmanager
+ALERTS_JSON=$(curl -sf "$AM_URL/api/v2/alerts?silenced=false&inhibited=false&active=true" 2>/dev/null)
+if [ $? -ne 0 ] || [ -z "$ALERTS_JSON" ]; then
+  echo "❌ Can't reach Alertmanager at $AM_URL"
+  echo "   Port-forward first: kubectl -n monitoring port-forward svc/alertmanager 9093:9093 &"
+  exit 1
+fi
+
+# Filter firing alerts only
+FIRING=$(echo "$ALERTS_JSON" | jq '[.[] | select(.status.state == "active")]')
+COUNT=$(echo "$FIRING" | jq 'length')
+
+if [ "$COUNT" = "0" ] || [ "$COUNT" = "null" ]; then
+  echo "✅ No firing alerts. Cluster looks healthy!"
+  exit 0
+fi
+
+echo "🔥 $COUNT firing alert(s) in Alertmanager"
 echo ""
 
-# 1. CrashLoopBackOff alert (critical)
-echo "1. KubePodCrashLooping — checkout OOMKilled"
-curl -s -X POST "$BOT_URL/webhook/alertmanager" \
+if [ "$1" = "--all" ]; then
+  # Send all firing alerts
+  SELECTED="$FIRING"
+  echo "Sending all $COUNT alerts..."
+else
+  # Pick one random alert
+  IDX=$((RANDOM % COUNT))
+  SELECTED=$(echo "$FIRING" | jq ".[$IDX:$IDX+1]")
+  ALERT_NAME=$(echo "$SELECTED" | jq -r '.[0].labels.alertname')
+  POD=$(echo "$SELECTED" | jq -r '.[0].labels.pod // "n/a"')
+  NS=$(echo "$SELECTED" | jq -r '.[0].labels.namespace // "n/a"')
+  echo "Picked: $ALERT_NAME (ns=$NS, pod=$POD)"
+fi
+
+# Build Alertmanager webhook payload
+PAYLOAD=$(echo "$SELECTED" | jq '{
+  version: "4",
+  status: "firing",
+  receiver: "lazy-diagnose",
+  groupLabels: {alertname: .[0].labels.alertname},
+  commonLabels: .[0].labels,
+  commonAnnotations: (.[0].annotations // {}),
+  alerts: [.[] | {
+    status: "firing",
+    labels: .labels,
+    annotations: (.annotations // {}),
+    startsAt: .startsAt,
+    endsAt: .endsAt,
+    generatorURL: (.generatorURL // ""),
+    fingerprint: .fingerprint
+  }]
+}')
+
+# Send to bot
+echo ""
+HTTP_CODE=$(curl -s -o /tmp/demo-webhook-response.txt -w "%{http_code}" \
+  -X POST "$BOT_URL/webhook/alertmanager" \
   -H "Content-Type: application/json" \
-  -d '{
-  "version": "4",
-  "status": "firing",
-  "receiver": "lazy-diagnose",
-  "groupLabels": {"alertname": "KubePodCrashLooping"},
-  "commonLabels": {"alertname": "KubePodCrashLooping", "namespace": "prod"},
-  "alerts": [
-    {
-      "status": "firing",
-      "labels": {
-        "alertname": "KubePodCrashLooping",
-        "severity": "critical",
-        "namespace": "prod",
-        "pod": "checkout-6bbbc4d46f-n4nzd",
-        "container": "checkout",
-        "deployment": "checkout"
-      },
-      "annotations": {
-        "summary": "Pod prod/checkout-6bbbc4d46f-n4nzd is CrashLooping",
-        "description": "Container checkout in pod checkout-6bbbc4d46f-n4nzd has been in CrashLoopBackOff for more than 1 minute."
-      },
-      "startsAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-      "generatorURL": "http://vmalert:8880/alerts",
-      "fingerprint": "abc123-crashloop"
-    }
-  ]
-}'
-echo ""
-echo ""
-sleep 2
+  -d "$PAYLOAD")
 
-# 2. Pod Pending alert (warning)
-echo "2. KubePodNotReady — worker Pending"
-curl -s -X POST "$BOT_URL/webhook/alertmanager" \
-  -H "Content-Type: application/json" \
-  -d '{
-  "version": "4",
-  "status": "firing",
-  "receiver": "lazy-diagnose",
-  "groupLabels": {"alertname": "KubePodNotReady"},
-  "commonLabels": {"alertname": "KubePodNotReady", "namespace": "prod"},
-  "alerts": [
-    {
-      "status": "firing",
-      "labels": {
-        "alertname": "KubePodNotReady",
-        "severity": "warning",
-        "namespace": "prod",
-        "pod": "worker-7649cd76c-9t7dw",
-        "deployment": "worker",
-        "phase": "Pending"
-      },
-      "annotations": {
-        "summary": "Pod prod/worker-7649cd76c-9t7dw is not ready",
-        "description": "Pod worker-7649cd76c-9t7dw has been in Pending phase for more than 2 minutes."
-      },
-      "startsAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-      "generatorURL": "http://vmalert:8880/alerts",
-      "fingerprint": "def456-pending"
-    }
-  ]
-}'
-echo ""
-echo ""
-sleep 2
-
-# 3. OOMKilled alert (critical)
-echo "3. ContainerOOMKilled — checkout"
-curl -s -X POST "$BOT_URL/webhook/alertmanager" \
-  -H "Content-Type: application/json" \
-  -d '{
-  "version": "4",
-  "status": "firing",
-  "receiver": "lazy-diagnose",
-  "groupLabels": {"alertname": "ContainerOOMKilled"},
-  "commonLabels": {"alertname": "ContainerOOMKilled", "namespace": "prod"},
-  "alerts": [
-    {
-      "status": "firing",
-      "labels": {
-        "alertname": "ContainerOOMKilled",
-        "severity": "critical",
-        "namespace": "prod",
-        "pod": "checkout-6bbbc4d46f-n4nzd",
-        "container": "checkout",
-        "deployment": "checkout"
-      },
-      "annotations": {
-        "summary": "Container checkout in prod/checkout-6bbbc4d46f-n4nzd was OOMKilled",
-        "description": "Container checkout was terminated due to OOM. Check memory limits."
-      },
-      "startsAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-      "generatorURL": "http://vmalert:8880/alerts",
-      "fingerprint": "ghi789-oom"
-    }
-  ]
-}'
-echo ""
-echo ""
-sleep 2
-
-# 4. ImagePullBackOff alert (warning)
-echo "4. KubePodImagePullError — api-bad-image"
-curl -s -X POST "$BOT_URL/webhook/alertmanager" \
-  -H "Content-Type: application/json" \
-  -d '{
-  "version": "4",
-  "status": "firing",
-  "receiver": "lazy-diagnose",
-  "groupLabels": {"alertname": "KubePodImagePullError"},
-  "commonLabels": {"alertname": "KubePodImagePullError", "namespace": "prod"},
-  "alerts": [
-    {
-      "status": "firing",
-      "labels": {
-        "alertname": "KubePodImagePullError",
-        "severity": "warning",
-        "namespace": "prod",
-        "pod": "api-bad-image-678d69b6bf-6zhck",
-        "container": "api",
-        "deployment": "api-bad-image"
-      },
-      "annotations": {
-        "summary": "Pod prod/api-bad-image-678d69b6bf-6zhck has image pull errors",
-        "description": "Container api is stuck in ImagePullBackOff. Check image name and pull secrets."
-      },
-      "startsAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-      "generatorURL": "http://vmalert:8880/alerts",
-      "fingerprint": "jkl012-imagepull"
-    }
-  ]
-}'
-echo ""
-echo ""
-sleep 2
-
-# 5. Deployment replicas mismatch (rollout regression)
-echo "5. KubeDeploymentReplicasMismatch — payment"
-curl -s -X POST "$BOT_URL/webhook/alertmanager" \
-  -H "Content-Type: application/json" \
-  -d '{
-  "version": "4",
-  "status": "firing",
-  "receiver": "lazy-diagnose",
-  "groupLabels": {"alertname": "KubeDeploymentReplicasMismatch"},
-  "commonLabels": {"alertname": "KubeDeploymentReplicasMismatch", "namespace": "prod"},
-  "alerts": [
-    {
-      "status": "firing",
-      "labels": {
-        "alertname": "KubeDeploymentReplicasMismatch",
-        "severity": "warning",
-        "namespace": "prod",
-        "deployment": "payment"
-      },
-      "annotations": {
-        "summary": "Deployment prod/payment has mismatched replicas",
-        "description": "Deployment payment has desired replicas but not all are ready after recent rollout."
-      },
-      "startsAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-      "generatorURL": "http://vmalert:8880/alerts",
-      "fingerprint": "mno345-replicas"
-    }
-  ]
-}'
-echo ""
-echo ""
-sleep 2
-
-# 6. Resolved alert (should NOT trigger diagnosis)
-echo "6. Resolved alert — should be ignored"
-curl -s -X POST "$BOT_URL/webhook/alertmanager" \
-  -H "Content-Type: application/json" \
-  -d '{
-  "version": "4",
-  "status": "resolved",
-  "receiver": "lazy-diagnose",
-  "groupLabels": {"alertname": "KubePodCrashLooping"},
-  "commonLabels": {"alertname": "KubePodCrashLooping", "namespace": "prod"},
-  "alerts": [
-    {
-      "status": "resolved",
-      "labels": {
-        "alertname": "KubePodCrashLooping",
-        "severity": "critical",
-        "namespace": "prod",
-        "pod": "checkout-6bbbc4d46f-n4nzd",
-        "deployment": "checkout"
-      },
-      "annotations": {
-        "summary": "Pod is no longer CrashLooping"
-      },
-      "startsAt": "'$(date -u -v-10M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "10 minutes ago" +%Y-%m-%dT%H:%M:%SZ)'",
-      "endsAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-      "generatorURL": "http://vmalert:8880/alerts",
-      "fingerprint": "abc123-crashloop"
-    }
-  ]
-}'
-echo ""
-echo ""
-
-# 7. Single alert test (quick)
-echo "=== Quick single alert test ==="
-echo "curl -s -X POST $BOT_URL/webhook/alertmanager -H 'Content-Type: application/json' -d @-"
-echo ""
-echo "Usage examples:"
-echo "  # Send all demo alerts:"
-echo "  ./deploy/test-workloads/demo-webhooks.sh"
-echo ""
-echo "  # Send single alert:"
-echo '  curl -X POST http://localhost:8080/webhook/alertmanager -H "Content-Type: application/json" -d '"'"'{"version":"4","status":"firing","alerts":[{"status":"firing","labels":{"alertname":"KubePodCrashLooping","severity":"critical","namespace":"prod","deployment":"checkout"},"annotations":{"summary":"checkout is crashing"}}]}'"'"''
-echo ""
-echo "  # Health check:"
-echo "  curl http://localhost:8080/healthz"
-echo ""
-echo "=== Done ==="
+if [ "$HTTP_CODE" = "200" ]; then
+  echo "✅ Sent to bot → check Telegram"
+else
+  echo "❌ Bot returned HTTP $HTTP_CODE"
+  cat /tmp/demo-webhook-response.txt
+fi

@@ -113,6 +113,10 @@ func main() {
 		defaultNs,
 		cfg.Telegram.AllowedChatIDs,
 		cfg.Telegram.AlertChatIDs,
+		webhook.AlertFormatConfig{
+			BotName:     cfg.Webhook.BotName,
+			ClusterName: cfg.Webhook.ClusterName,
+		},
 		logger,
 	)
 	if err != nil {

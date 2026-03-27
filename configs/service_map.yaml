@@ -1,7 +1,7 @@
 services:
   - name: checkout
     aliases: [checkout-service, checkout-api]
-    namespace: prod
+    namespace: demo
     primary_resource: deployment/checkout
     selectors:
       app: checkout
@@ -10,7 +10,7 @@ services:
 
   - name: payment
     aliases: [payment-service, payment-api]
-    namespace: prod
+    namespace: demo
     primary_resource: deployment/payment
     selectors:
       app: payment
@@ -19,7 +19,7 @@ services:
 
   - name: worker
     aliases: [background-worker, job-worker]
-    namespace: prod
+    namespace: demo
     primary_resource: deployment/worker
     selectors:
       app: worker
@@ -27,40 +27,40 @@ services:
 
   # Test scenarios
   - name: api-config-missing
-    namespace: prod
+    namespace: demo
     primary_resource: deployment/api-config-missing
     selectors:
       app: api-config-missing
 
   - name: api-probe-fail
-    namespace: prod
+    namespace: demo
     primary_resource: deployment/api-probe-fail
     selectors:
       app: api-probe-fail
 
   - name: api-bad-image
-    namespace: prod
+    namespace: demo
     primary_resource: deployment/api-bad-image
     selectors:
       app: api-bad-image
 
   - name: api-dependency-fail
     aliases: [api-dep-fail]
-    namespace: prod
+    namespace: demo
     primary_resource: deployment/api-dependency-fail
     selectors:
       app: api-dependency-fail
 
   - name: ml-worker-taint
     aliases: [ml-worker]
-    namespace: prod
+    namespace: demo
     primary_resource: deployment/ml-worker-taint
     selectors:
       app: ml-worker-taint
 
   - name: db-pvc-pending
     aliases: [db-pvc]
-    namespace: prod
+    namespace: demo
     primary_resource: deployment/db-pvc-pending
     selectors:
       app: db-pvc-pending

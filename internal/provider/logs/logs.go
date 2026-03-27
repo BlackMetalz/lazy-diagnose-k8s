@@ -38,8 +38,10 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target, time
 	}
 
 	// Build LogsQL query for the target
+	// Search by pod name prefix (deployment name) — more reliable than container name
+	// since container name often differs from deployment name (e.g. deployment=api-config-missing, container=api)
 	query := fmt.Sprintf(
-		`kubernetes.pod_namespace:%s AND kubernetes.container_name:%s`,
+		`kubernetes.pod_namespace:%s AND kubernetes.pod_name:%s*`,
 		target.Namespace, target.ResourceName,
 	)
 

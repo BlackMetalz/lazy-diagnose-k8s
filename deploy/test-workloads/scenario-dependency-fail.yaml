@@ -10,7 +10,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-dependency-fail
-  namespace: prod
+  namespace: demo
   labels:
     app: api-dependency-fail
 spec:

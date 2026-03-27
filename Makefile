@@ -42,7 +42,7 @@ deploy: docker-load
 
 # Test scenarios
 scenarios:
-	@kubectl create namespace prod --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create namespace demo --dry-run=client -o yaml | kubectl apply -f -
 	@kubectl apply -f deploy/test-workloads/
 	@echo ""
 	@echo "All scenarios deployed. Wait ~30s then check:"
@@ -50,7 +50,7 @@ scenarios:
 
 scenarios-status:
 	@echo "=== Pod Status ==="
-	@kubectl get pods -n prod -o wide
+	@kubectl get pods -n demo -o wide
 	@echo ""
 	@echo "=== Expected ==="
 	@echo "  checkout           CrashLoopBackOff  (OOMKilled)"
@@ -68,5 +68,5 @@ demo-alerts:
 
 scenarios-clean:
 	@kubectl delete -f deploy/test-workloads/ --ignore-not-found
-	@kubectl delete pvc data-pvc-test -n prod --ignore-not-found
+	@kubectl delete pvc data-pvc-test -n demo --ignore-not-found
 	@echo "All scenarios removed."

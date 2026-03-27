@@ -35,6 +35,53 @@ func (e *Engine) WithLogger(l *slog.Logger) *Engine {
 	return e
 }
 
+// HasSummarizer returns true if LLM summarizer is configured.
+func (e *Engine) HasSummarizer() bool { return e.summarizer != nil }
+
+// SummarizeWithLLM sends evidence to LLM for free-form analysis (AI Investigation mode).
+func (e *Engine) SummarizeWithLLM(ctx context.Context, intent domain.Intent, bundle *domain.EvidenceBundle) (string, error) {
+	if e.summarizer == nil {
+		return "", fmt.Errorf("LLM summarizer not configured")
+	}
+	// Create a minimal result for the summarizer
+	scores := e.scoreHypotheses(e.rulesForIntent(intent), bundle)
+	sortScores(scores)
+	result := &domain.DiagnosisResult{Target: bundle.Target}
+	if len(scores) > 0 && scores[0].Score > 0 {
+		result.PrimaryHypothesis = &scores[0]
+	}
+	result.Confidence = e.calculateConfidence(scores, bundle)
+	return e.summarizer.Summarize(ctx, intent, bundle, result)
+}
+
+// DiagnoseWithoutLLM runs diagnosis with template summary only — no LLM call.
+func (e *Engine) DiagnoseWithoutLLM(ctx context.Context, intent domain.Intent, bundle *domain.EvidenceBundle) *domain.DiagnosisResult {
+	rules := e.rulesForIntent(intent)
+	scores := e.scoreHypotheses(rules, bundle)
+	sortScores(scores)
+
+	result := &domain.DiagnosisResult{Target: bundle.Target}
+	if len(scores) > 0 && scores[0].Score > 0 {
+		result.PrimaryHypothesis = &scores[0]
+		for _, s := range scores[1:] {
+			if s.Score > 0 {
+				result.AlternativeHypotheses = append(result.AlternativeHypotheses, s)
+			}
+		}
+	}
+
+	// Fallback: if no hypothesis matched but K8s shows clear issues, infer from raw facts
+	if result.PrimaryHypothesis == nil {
+		result.PrimaryHypothesis = e.inferFromFacts(bundle)
+	}
+
+	result.Confidence = e.calculateConfidence(scores, bundle)
+	result.SupportingEvidence = RedactSlice(e.collectEvidence(bundle))
+	result.Notes = e.collectNotes(bundle)
+	result.Summary = e.summarize(intent, result, bundle)
+	return result
+}
+
 // Diagnose scores hypotheses and produces a DiagnosisResult.
 func (e *Engine) Diagnose(intent domain.Intent, bundle *domain.EvidenceBundle) *domain.DiagnosisResult {
 	return e.DiagnoseWithContext(context.Background(), intent, bundle)
@@ -61,6 +108,11 @@ func (e *Engine) DiagnoseWithContext(ctx context.Context, intent domain.Intent, 
 				}
 			}
 		}
+	}
+
+	// Fallback: if no hypothesis matched but K8s shows clear issues, infer from raw facts
+	if result.PrimaryHypothesis == nil {
+		result.PrimaryHypothesis = e.inferFromFacts(bundle)
 	}
 
 	result.Confidence = e.calculateConfidence(scores, bundle)
@@ -378,18 +430,27 @@ func (e *Engine) summarizeCrashLoop(h *domain.HypothesisScore, bundle *domain.Ev
 
 	switch h.ID {
 	case "oom_resource":
-		// Find actual memory numbers
+		// Memory info from metrics or resource limits
 		if bundle.MetricsFacts != nil && bundle.MetricsFacts.MemoryLimit != nil {
 			limitMi := *bundle.MetricsFacts.MemoryLimit / (1024 * 1024)
-			parts = append(parts, fmt.Sprintf("Container OOMKilled — hitting memory limit (%.0fMi).", limitMi))
+			parts = append(parts, fmt.Sprintf("Container OOMKilled — memory limit <code>%.0fMi</code>.", limitMi))
+		} else if bundle.K8sFacts != nil && bundle.K8sFacts.ResourceRequests != nil && bundle.K8sFacts.ResourceRequests.MemoryLimit != "" {
+			parts = append(parts, fmt.Sprintf("Container OOMKilled — memory limit <code>%s</code>.", bundle.K8sFacts.ResourceRequests.MemoryLimit))
 		} else {
 			parts = append(parts, "Container OOMKilled — exceeded memory limit.")
 		}
-		// Find restart count
+		// Restart count + OOM event
 		if bundle.K8sFacts != nil {
 			for _, pod := range bundle.K8sFacts.PodStatuses {
 				if pod.RestartCount > 0 {
-					parts = append(parts, fmt.Sprintf("Restarted %d times.", pod.RestartCount))
+					parts = append(parts, fmt.Sprintf("Restarted <b>%d</b> times.", pod.RestartCount))
+					break
+				}
+			}
+			// Show OOM event if available
+			for _, ev := range bundle.K8sFacts.Events {
+				if strings.Contains(strings.ToLower(ev.Message), "oom") || strings.Contains(strings.ToLower(ev.Reason), "oom") {
+					parts = append(parts, fmt.Sprintf("Event: %s.", truncateStr(ev.Message, 120)))
 					break
 				}
 			}
@@ -398,28 +459,165 @@ func (e *Engine) summarizeCrashLoop(h *domain.HypothesisScore, bundle *domain.Ev
 
 	case "config_env_missing":
 		parts = append(parts, "Container crashes on startup — missing config or environment variable.")
+		// Show relevant log
 		if bundle.LogsFacts != nil && len(bundle.LogsFacts.TopErrors) > 0 {
-			parts = append(parts, fmt.Sprintf("Log: \"%s\".", bundle.LogsFacts.TopErrors[0].Sample))
+			parts = append(parts, fmt.Sprintf("Log: %s.", truncateStr(bundle.LogsFacts.TopErrors[0].Sample, 150)))
+		}
+		// Show event (e.g. BackOff)
+		if ev := findEventByReason(bundle, "BackOff", "Failed"); ev != "" {
+			parts = append(parts, fmt.Sprintf("Event: %s.", truncateStr(ev, 120)))
 		}
 
 	case "dependency_connectivity":
-		parts = append(parts, "Container can't reach dependency (connection refused/timeout).")
+		parts = append(parts, "Container can't reach dependency.")
+		// Show specific connection error from logs
 		if bundle.LogsFacts != nil && len(bundle.LogsFacts.TopErrors) > 0 {
-			parts = append(parts, fmt.Sprintf("Log: \"%s\".", bundle.LogsFacts.TopErrors[0].Sample))
+			parts = append(parts, fmt.Sprintf("Log: %s.", truncateStr(bundle.LogsFacts.TopErrors[0].Sample, 150)))
+		}
+		// Show BackOff event
+		if ev := findEventByReason(bundle, "BackOff"); ev != "" {
+			parts = append(parts, fmt.Sprintf("Event: %s.", truncateStr(ev, 120)))
 		}
 
 	case "probe_issue":
-		parts = append(parts, "Container killed by liveness/readiness probe failure.")
+		parts = append(parts, "Container killed by probe failure.")
+		// Find specific probe event
+		if bundle.K8sFacts != nil {
+			for _, ev := range bundle.K8sFacts.Events {
+				msg := strings.ToLower(ev.Message)
+				if strings.Contains(msg, "liveness probe failed") {
+					parts = append(parts, fmt.Sprintf("Event: \"%s\".", truncateStr(ev.Message, 120)))
+					break
+				}
+				if strings.Contains(msg, "readiness probe failed") {
+					parts = append(parts, fmt.Sprintf("Event: \"%s\".", truncateStr(ev.Message, 120)))
+					break
+				}
+			}
+		}
 		parts = append(parts, "Check probe config — initialDelaySeconds may be too short or endpoint not responding.")
 
 	case "bad_image":
-		parts = append(parts, "Container can't pull image — wrong tag or missing pull credentials.")
+		parts = append(parts, e.summarizeBadImage(bundle)...)
 
 	default:
 		parts = append(parts, fmt.Sprintf("Container in CrashLoop. Root cause: %s.", h.Name))
 	}
 
 	return strings.Join(parts, " ")
+}
+
+func (e *Engine) summarizeBadImage(bundle *domain.EvidenceBundle) []string {
+	if bundle.K8sFacts == nil {
+		return []string{"Container can't pull image."}
+	}
+
+	// Find the image name from container statuses
+	imageName := ""
+	for _, pod := range bundle.K8sFacts.PodStatuses {
+		for _, cs := range pod.ContainerStatuses {
+			if cs.Reason == "ErrImagePull" || cs.Reason == "ImagePullBackOff" {
+				// Image name isn't in ContainerStatus, check events
+				break
+			}
+		}
+	}
+
+	// Parse events for specific error reason
+	for _, ev := range bundle.K8sFacts.Events {
+		msg := ev.Message
+		lower := strings.ToLower(msg)
+
+		switch {
+		case strings.Contains(lower, "manifest unknown") || strings.Contains(lower, "not found"):
+			// Extract image name from event message
+			if img := extractImageFromEvent(msg); img != "" {
+				imageName = img
+			}
+			return []string{
+				fmt.Sprintf("Image tag does not exist: <code>%s</code>.", imageName),
+				"Verify the tag is published in the registry.",
+			}
+
+		case strings.Contains(lower, "unauthorized") || strings.Contains(lower, "denied") || strings.Contains(lower, "forbidden"):
+			if img := extractImageFromEvent(msg); img != "" {
+				imageName = img
+			}
+			return []string{
+				fmt.Sprintf("Authentication failed pulling <code>%s</code>.", imageName),
+				"Check imagePullSecrets and registry credentials.",
+			}
+
+		case strings.Contains(lower, "no such host") || strings.Contains(lower, "lookup") || strings.Contains(lower, "dial tcp"):
+			if img := extractImageFromEvent(msg); img != "" {
+				imageName = img
+			}
+			return []string{
+				fmt.Sprintf("Registry unreachable for <code>%s</code>.", imageName),
+				"Check registry hostname and network/DNS connectivity.",
+			}
+
+		case strings.Contains(lower, "failed to pull image") || strings.Contains(lower, "errimagepull"):
+			if img := extractImageFromEvent(msg); img != "" {
+				imageName = img
+			}
+			return []string{
+				fmt.Sprintf("Failed to pull image <code>%s</code>.", imageName),
+				fmt.Sprintf("Event: \"%s\".", truncateStr(msg, 150)),
+			}
+		}
+	}
+
+	return []string{"Container can't pull image. Check events for details."}
+}
+
+// extractImageFromEvent tries to pull image reference from event messages like:
+// 'Failed to pull image "nginx:v99.99.99-does-not-exist": rpc error...'
+func extractImageFromEvent(msg string) string {
+	// Look for quoted image name
+	start := strings.Index(msg, "\"")
+	if start >= 0 {
+		end := strings.Index(msg[start+1:], "\"")
+		if end >= 0 {
+			return msg[start+1 : start+1+end]
+		}
+	}
+	return ""
+}
+
+// findEventByReason searches for an event matching any of the given reasons.
+func findEventByReason(bundle *domain.EvidenceBundle, reasons ...string) string {
+	if bundle.K8sFacts == nil {
+		return ""
+	}
+	for _, ev := range bundle.K8sFacts.Events {
+		for _, reason := range reasons {
+			if strings.EqualFold(ev.Reason, reason) {
+				return ev.Message
+			}
+		}
+	}
+	return ""
+}
+
+// findSchedulerEvent returns the most relevant FailedScheduling event message.
+func findSchedulerEvent(bundle *domain.EvidenceBundle) string {
+	if bundle.K8sFacts == nil {
+		return ""
+	}
+	for _, ev := range bundle.K8sFacts.Events {
+		if ev.Reason == "FailedScheduling" {
+			return ev.Message
+		}
+	}
+	return ""
+}
+
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 func (e *Engine) summarizePending(h *domain.HypothesisScore, bundle *domain.EvidenceBundle) string {
@@ -432,14 +630,24 @@ func (e *Engine) summarizePending(h *domain.HypothesisScore, bundle *domain.Evid
 			rr := bundle.K8sFacts.ResourceRequests
 			parts = append(parts, fmt.Sprintf("Pod requests: CPU=%s, Memory=%s.", rr.CPURequest, rr.MemoryRequest))
 		}
+		// Show scheduler event
+		if detail := findSchedulerEvent(bundle); detail != "" {
+			parts = append(parts, fmt.Sprintf("Scheduler: %s.", truncateStr(detail, 150)))
+		}
 		parts = append(parts, "Scale up cluster or reduce resource requests.")
 
 	case "taint_mismatch":
 		parts = append(parts, "Pod can't be scheduled — node has taint that pod doesn't tolerate.")
+		if detail := findSchedulerEvent(bundle); detail != "" {
+			parts = append(parts, fmt.Sprintf("Scheduler: %s.", truncateStr(detail, 150)))
+		}
 		parts = append(parts, "Add toleration or remove taint from node.")
 
 	case "affinity_issue":
 		parts = append(parts, "Pod can't be scheduled — no node matches affinity/nodeSelector.")
+		if detail := findSchedulerEvent(bundle); detail != "" {
+			parts = append(parts, fmt.Sprintf("Scheduler: %s.", truncateStr(detail, 150)))
+		}
 
 	case "pvc_binding":
 		parts = append(parts, "Pod stuck Pending — PersistentVolumeClaim can't bind.")
@@ -494,6 +702,115 @@ func (e *Engine) summarizeRollout(h *domain.HypothesisScore, bundle *domain.Evid
 	}
 
 	return strings.Join(parts, " ")
+}
+
+// inferFromFacts attempts to determine the issue directly from K8s facts + logs
+// when no playbook hypothesis scored above 0. This prevents "No anomaly" on obvious issues.
+func (e *Engine) inferFromFacts(bundle *domain.EvidenceBundle) *domain.HypothesisScore {
+	if bundle.K8sFacts == nil {
+		return nil
+	}
+
+	var signals []string
+
+	// Check container statuses for obvious issues
+	for _, pod := range bundle.K8sFacts.PodStatuses {
+		for _, cs := range pod.ContainerStatuses {
+			switch {
+			case cs.Reason == "OOMKilled" || cs.LastTermination == "OOMKilled":
+				return &domain.HypothesisScore{
+					ID: "oom_resource", Name: "OOM / Resource exhaustion",
+					Score: 40, MaxScore: 90, Signals: []string{"container_oomkilled"},
+				}
+			case cs.Reason == "CrashLoopBackOff":
+				signals = append(signals, "crashloop_detected")
+			case cs.Reason == "ErrImagePull" || cs.Reason == "ImagePullBackOff":
+				return &domain.HypothesisScore{
+					ID: "bad_image", Name: "Bad image / Startup failure",
+					Score: 60, MaxScore: 90, Signals: []string{"image_pull_error"},
+				}
+			case cs.Reason == "CreateContainerConfigError":
+				return &domain.HypothesisScore{
+					ID: "config_env_missing", Name: "Config / Env missing",
+					Score: 50, MaxScore: 70, Signals: []string{"config_error"},
+				}
+			case cs.ExitCode == 1 && cs.State == "terminated":
+				signals = append(signals, "exit_code_1")
+			}
+		}
+	}
+
+	// Check events for clues
+	for _, ev := range bundle.K8sFacts.Events {
+		msg := strings.ToLower(ev.Message)
+		if strings.Contains(msg, "liveness probe failed") || strings.Contains(msg, "readiness probe failed") {
+			return &domain.HypothesisScore{
+				ID: "probe_issue", Name: "Probe misconfiguration",
+				Score: 50, MaxScore: 70, Signals: []string{"probe_failed_event"},
+			}
+		}
+		if strings.Contains(msg, "failedscheduling") {
+			return &domain.HypothesisScore{
+				ID: "insufficient_resources", Name: "Insufficient cluster resources",
+				Score: 60, MaxScore: 90, Signals: []string{"failedscheduling_event"},
+			}
+		}
+	}
+
+	// Check logs for error patterns (direct scan, not relying on playbook rules)
+	if bundle.LogsFacts != nil && len(bundle.LogsFacts.TopErrors) > 0 {
+		topError := strings.ToLower(bundle.LogsFacts.TopErrors[0].Pattern)
+		switch {
+		case strings.Contains(topError, "env not found") || strings.Contains(topError, "missing required") ||
+			strings.Contains(topError, "config error") || strings.Contains(topError, "undefined variable") ||
+			strings.Contains(topError, "not set"):
+			return &domain.HypothesisScore{
+				ID: "config_env_missing", Name: "Config / Env missing",
+				Score: 50, MaxScore: 70, Signals: append(signals, "error_log_config"),
+			}
+		case strings.Contains(topError, "connection refused") || strings.Contains(topError, "timeout") ||
+			strings.Contains(topError, "dial tcp") || strings.Contains(topError, "ECONNREFUSED"):
+			return &domain.HypothesisScore{
+				ID: "dependency_connectivity", Name: "Dependency / Connectivity issue",
+				Score: 40, MaxScore: 80, Signals: append(signals, "error_log_connectivity"),
+			}
+		case strings.Contains(topError, "permission denied") || strings.Contains(topError, "access denied"):
+			return &domain.HypothesisScore{
+				ID: "config_env_missing", Name: "Permission / Auth error",
+				Score: 40, MaxScore: 70, Signals: append(signals, "error_log_permission"),
+			}
+		}
+	}
+
+	// Check raw recent log lines too (TopErrors might miss patterns)
+	if bundle.LogsFacts != nil {
+		for _, line := range bundle.LogsFacts.RecentLines {
+			lower := strings.ToLower(line)
+			if strings.Contains(lower, "missing required") || strings.Contains(lower, "not set") ||
+				strings.Contains(lower, "config validation failed") || strings.Contains(lower, "env") && strings.Contains(lower, "fatal") {
+				return &domain.HypothesisScore{
+					ID: "config_env_missing", Name: "Config / Env missing",
+					Score: 50, MaxScore: 70, Signals: append(signals, "log_line_config_error"),
+				}
+			}
+			if strings.Contains(lower, "connection refused") || strings.Contains(lower, "dial tcp") {
+				return &domain.HypothesisScore{
+					ID: "dependency_connectivity", Name: "Dependency / Connectivity issue",
+					Score: 40, MaxScore: 80, Signals: append(signals, "log_line_connectivity"),
+				}
+			}
+		}
+	}
+
+	// If CrashLoop detected but no specific cause found, return generic crash hypothesis
+	if len(signals) > 0 {
+		return &domain.HypothesisScore{
+			ID: "unknown_crash", Name: "Container crash (check logs)",
+			Score: 20, MaxScore: 100, Signals: signals,
+		}
+	}
+
+	return nil
 }
 
 func (e *Engine) collectNotes(bundle *domain.EvidenceBundle) []string {

@@ -29,6 +29,70 @@ func New(collector *provider.Collector, diagEngine *diagnosis.Engine) *Engine {
 	}
 }
 
+// GetCollector returns the provider collector for direct use.
+func (e *Engine) GetCollector() *provider.Collector { return e.collector }
+
+// HasSummarizer returns true if LLM summarizer is configured.
+func (e *Engine) HasSummarizer() bool { return e.diagnosis.HasSummarizer() }
+
+// HasLogsProvider returns true if logs provider is available.
+func (e *Engine) HasLogsProvider() bool {
+	return e.collector != nil && e.collector.Logs != nil
+}
+
+// CollectLogs queries the logs provider directly.
+func (e *Engine) CollectLogs(ctx context.Context, target *domain.Target, timeRange domain.TimeRange) (*domain.LogsFacts, error) {
+	if e.collector == nil || e.collector.Logs == nil {
+		return nil, fmt.Errorf("logs provider not available")
+	}
+	return e.collector.Logs.CollectFacts(ctx, target, timeRange)
+}
+
+// SummarizeWithLLM sends evidence directly to LLM for free-form analysis.
+func (e *Engine) SummarizeWithLLM(ctx context.Context, intent domain.Intent, bundle *domain.EvidenceBundle) (string, error) {
+	return e.diagnosis.SummarizeWithLLM(ctx, intent, bundle)
+}
+
+// RunWithoutLLM runs diagnosis with template summary only (no LLM call).
+func (e *Engine) RunWithoutLLM(ctx context.Context, req *domain.DiagnosisRequest, progress ProgressFunc) *domain.DiagnosisResult {
+	start := time.Now()
+	if progress == nil {
+		progress = func(string) {}
+	}
+
+	timeRange := domain.TimeRange{
+		From: time.Now().Add(-1 * time.Hour),
+		To:   time.Now(),
+	}
+	if req.Intent == domain.IntentRolloutRegression {
+		timeRange.From = time.Now().Add(-3 * time.Hour)
+	}
+
+	progress("Collecting data from K8s, logs, metrics...")
+	bundle := e.collector.Collect(ctx, req.Target, timeRange)
+	bundle.CollectedAt = time.Now()
+
+	var statusParts []string
+	for _, ps := range bundle.ProviderStatuses {
+		if ps.Available {
+			statusParts = append(statusParts, fmt.Sprintf("✓ %s (%s)", ps.Name, ps.Duration.Round(time.Millisecond)))
+		} else {
+			statusParts = append(statusParts, fmt.Sprintf("✗ %s: %s", ps.Name, ps.Error))
+		}
+	}
+	if len(statusParts) > 0 {
+		progress(strings.Join(statusParts, "\n"))
+	}
+
+	progress("Analyzing evidence...")
+	result := diagnosis.AnalyzeEvidence(bundle)
+	result.RequestID = req.ID
+	result.SuggestedCommands = composer.Compose(req.Intent, result)
+	result.RecommendedSteps = e.recommendSteps(req.Intent, result)
+	result.Duration = time.Since(start)
+	return result
+}
+
 // Run executes the diagnosis playbook for the given intent and target.
 func (e *Engine) Run(ctx context.Context, req *domain.DiagnosisRequest, progress ProgressFunc) *domain.DiagnosisResult {
 	start := time.Now()

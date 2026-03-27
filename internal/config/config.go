@@ -44,6 +44,8 @@ type WebhookConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	Addr        string `yaml:"addr"`         // e.g. ":8080"
 	BearerToken string `yaml:"bearer_token"` // optional auth for incoming webhooks
+	ClusterName string `yaml:"cluster_name"` // shown in alert header
+	BotName     string `yaml:"bot_name"`     // shown in alert header, e.g. "lazy-diagnose-k8s"
 }
 
 type MCPConfig struct {

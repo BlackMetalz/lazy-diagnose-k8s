@@ -13,13 +13,13 @@ import (
 // handleCallback processes inline keyboard button presses.
 func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	chatID := cb.Message.Chat.ID
+	alertMsgID := cb.Message.MessageID // the alert notification message — reply to this
 	data := cb.Data
 
 	b.logger.Info("callback received", "chat_id", chatID, "data", data, "user", cb.From.UserName)
 
-	// Acknowledge the callback
-	callback := tgbotapi.NewCallback(cb.ID, "")
-	b.api.Send(callback)
+	// Acknowledge the callback immediately
+	b.api.Send(tgbotapi.NewCallback(cb.ID, ""))
 
 	parts := strings.SplitN(data, ":", 3)
 	if len(parts) < 2 {
@@ -29,62 +29,93 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	action := parts[0]
 
 	switch action {
-	case "rerun":
-		// rerun:namespace:resourceName
+	case "ai":
 		if len(parts) < 3 {
 			return
 		}
-		ns, name := parts[1], parts[2]
-		go b.handleRerun(ctx, chatID, ns, name)
+		go b.handleAIInvestigation(ctx, chatID, alertMsgID, parts[1], parts[2])
+
+	case "static":
+		if len(parts) < 3 {
+			return
+		}
+		go b.handleStaticAnalysis(ctx, chatID, alertMsgID, parts[1], parts[2])
 
 	case "logs":
-		// logs:namespace:resourceName
 		if len(parts) < 3 {
 			return
 		}
-		ns, name := parts[1], parts[2]
-		go b.handleShowLogs(ctx, chatID, ns, name)
+		go b.handleShowLogs(ctx, chatID, alertMsgID, parts[1], parts[2])
 
 	case "scan":
-		// scan:namespace
 		ns := parts[1]
 		go b.handleScan(ctx, chatID, ParsedMessage{Command: "scan", Namespace: ns})
+
+	case "rerun":
+		if len(parts) < 3 {
+			return
+		}
+		go b.handleStaticAnalysis(ctx, chatID, alertMsgID, parts[1], parts[2])
 	}
 }
 
-func (b *Bot) handleRerun(ctx context.Context, chatID int64, ns, name string) {
-	target, err := b.resolver.Resolve(name, ns)
-	if err != nil {
-		// Fallback
-		target = &domain.Target{
-			Name:         name,
-			Namespace:    ns,
-			Kind:         "deployment",
-			ResourceName: name,
+// handleAIInvestigation collects evidence and sends to LLM for free-form analysis.
+func (b *Bot) handleAIInvestigation(ctx context.Context, chatID int64, replyTo int, ns, name string) {
+	target := b.resolveOrFallback(ns, name)
+	progressMsg := b.sendReply(chatID, replyTo, fmt.Sprintf("🤖 AI investigating %s...", target.FullName()))
+
+	bundle := b.collectEvidence(ctx, target, progressMsg)
+
+	if b.engine.HasSummarizer() {
+		b.updateProgress(progressMsg, chatID, fmt.Sprintf("🤖 AI investigating %s...\n✓ Data collected, asking LLM...", target.FullName()))
+
+		intent := domain.IntentCrashLoop
+		summary, err := b.engine.SummarizeWithLLM(ctx, intent, bundle)
+		if err != nil {
+			b.logger.Warn("AI investigation failed", "error", err)
+			text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ LLM unavailable: %s\n\nUse 📊 Static Analysis instead.", esc(err.Error()))
+			keyboard := buildPostDiagnosisKeyboard(ns, name)
+			b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
+			return
 		}
+
+		text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n%s", esc(summary))
+		keyboard := buildPostDiagnosisKeyboard(ns, name)
+		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
+	} else {
+		text := "🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ LLM not configured.\n\nSet <code>llm.enabled: true</code> in config.yaml or use 📊 Static Analysis."
+		keyboard := buildPostDiagnosisKeyboard(ns, name)
+		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
+	}
+}
+
+// handleStaticAnalysis runs the deterministic playbook scoring pipeline.
+func (b *Bot) handleStaticAnalysis(ctx context.Context, chatID int64, replyTo int, ns, name string) {
+	target := b.resolveOrFallback(ns, name)
+
+	intent := domain.ClassifyIntent(name)
+	if intent == domain.IntentUnknown {
+		intent = domain.IntentCrashLoop
 	}
 
-	intent := domain.IntentCrashLoop // default
 	req := &domain.DiagnosisRequest{
-		ID:        fmt.Sprintf("rerun-%d-%d", chatID, time.Now().UnixMilli()),
+		ID:        fmt.Sprintf("static-%d-%d", chatID, time.Now().UnixMilli()),
 		ChatID:    chatID,
-		RawText:   fmt.Sprintf("[Rerun] %s/%s", ns, name),
+		RawText:   fmt.Sprintf("[Static] %s/%s", ns, name),
 		Intent:    intent,
 		Target:    target,
 		CreatedAt: time.Now(),
 	}
 
-	progressMsg := b.sendMessage(chatID, fmt.Sprintf("🔄 Re-diagnosing %s...", target.FullName()))
+	progressMsg := b.sendReply(chatID, replyTo, fmt.Sprintf("📊 Analyzing %s...", target.FullName()))
 
 	progress := func(text string) {
-		if progressMsg != 0 {
-			b.editMessage(chatID, progressMsg, fmt.Sprintf("🔄 Re-diagnosing %s...\n%s", target.FullName(), text))
-		}
+		b.updateProgress(progressMsg, chatID, fmt.Sprintf("📊 Analyzing %s...\n%s", target.FullName(), text))
 	}
 
-	result := b.engine.Run(ctx, req, progress)
-	formatted := FormatResult(result)
-	keyboard := buildDiagnosisKeyboard(target, ns)
+	result := b.engine.RunWithoutLLM(ctx, req, progress)
+	formatted := FormatResultCompact(result)
+	keyboard := buildPostDiagnosisKeyboard(ns, name)
 
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, formatted, keyboard)
@@ -93,40 +124,90 @@ func (b *Bot) handleRerun(ctx context.Context, chatID int64, ns, name string) {
 	}
 }
 
-func (b *Bot) handleShowLogs(ctx context.Context, chatID int64, ns, name string) {
+// handleShowLogs queries VictoriaLogs and shows raw container logs.
+func (b *Bot) handleShowLogs(ctx context.Context, chatID int64, replyTo int, ns, name string) {
+	target := b.resolveOrFallback(ns, name)
+	progressMsg := b.sendReply(chatID, replyTo, fmt.Sprintf("📜 Fetching logs for %s...", target.FullName()))
+
+	timeRange := domain.TimeRange{
+		From: time.Now().Add(-30 * time.Minute),
+		To:   time.Now(),
+	}
+
+	// Try to get real logs from provider
+	var logLines []string
+	if b.engine.HasLogsProvider() {
+		facts, err := b.engine.CollectLogs(ctx, target, timeRange)
+		if err != nil {
+			b.logger.Warn("failed to fetch logs", "target", target.FullName(), "error", err)
+		} else if facts != nil {
+			logLines = facts.RecentLines
+		}
+	}
+
+	var text string
+	if len(logLines) > 0 {
+		var lb strings.Builder
+		lb.WriteString("📜 <b>Logs</b> (last 30 min)\n─────────────────────\n\n<pre>")
+		limit := len(logLines)
+		if limit > 30 {
+			limit = 30
+		}
+		for _, line := range logLines[:limit] {
+			if len(line) > 200 {
+				line = line[:200] + "..."
+			}
+			lb.WriteString(esc(line) + "\n")
+		}
+		lb.WriteString("</pre>")
+		if len(logLines) > 30 {
+			lb.WriteString(fmt.Sprintf("\n<i>... showing 30/%d lines</i>", len(logLines)))
+		}
+		lb.WriteString(fmt.Sprintf("\n\n<i>%s — %s</i>", timeRange.From.Format("15:04"), timeRange.To.Format("15:04")))
+		text = lb.String()
+	} else {
+		text = fmt.Sprintf("📜 <b>Logs</b>\n─────────────────────\n\nNo logs found in last 30 minutes.\n\nTry manually:\n<pre>kubectl logs %s/%s -n %s --tail=50</pre>",
+			esc(target.Kind), esc(target.ResourceName), esc(ns))
+	}
+
+	keyboard := buildPostDiagnosisKeyboard(ns, name)
+	if progressMsg != 0 {
+		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
+	} else {
+		b.sendMessageWithKeyboard(chatID, text, keyboard)
+	}
+}
+
+// --- helpers ---
+
+func (b *Bot) resolveOrFallback(ns, name string) *domain.Target {
 	target, err := b.resolver.Resolve(name, ns)
 	if err != nil {
-		target = &domain.Target{
+		return &domain.Target{
 			Name:         name,
 			Namespace:    ns,
 			Kind:         "deployment",
 			ResourceName: name,
 		}
 	}
+	return target
+}
 
-	progressMsg := b.sendMessage(chatID, fmt.Sprintf("📜 Fetching logs for %s...", target.FullName()))
-
-	// Collect just logs
+func (b *Bot) collectEvidence(ctx context.Context, target *domain.Target, progressMsg int) *domain.EvidenceBundle {
 	timeRange := domain.TimeRange{
-		From: time.Now().Add(-30 * time.Minute),
+		From: time.Now().Add(-1 * time.Hour),
 		To:   time.Now(),
 	}
-
-	var logText string
-	if b.engine != nil {
-		// Use the collector directly to get logs
-		logText = fmt.Sprintf("<b>Recent logs: %s</b>\n<pre>", esc(target.FullName()))
-		logText += fmt.Sprintf("kubectl logs %s/%s -n %s --tail=50", target.Kind, target.ResourceName, ns)
-		logText += "\n</pre>\n"
-		logText += fmt.Sprintf("\n<i>Time range: last 30 min (%s - %s)</i>",
-			timeRange.From.Format("15:04:05"),
-			timeRange.To.Format("15:04:05"))
+	collector := b.engine.GetCollector()
+	if collector == nil {
+		return &domain.EvidenceBundle{Target: target}
 	}
+	return collector.Collect(ctx, target, timeRange)
+}
 
-	if progressMsg != 0 {
-		b.editMessage(chatID, progressMsg, logText)
-	} else {
-		b.sendMessage(chatID, logText)
+func (b *Bot) updateProgress(msgID int, chatID int64, text string) {
+	if msgID != 0 {
+		b.editMessage(chatID, msgID, text)
 	}
 }
 
@@ -139,8 +220,7 @@ func (b *Bot) sendMessageWithKeyboard(chatID int64, text string, keyboard tgbota
 
 	sent, err := b.api.Send(msg)
 	if err != nil {
-		b.logger.Warn("failed to send message with keyboard", "error", err)
-		// Retry without HTML
+		b.logger.Warn("failed to send message with keyboard, retrying plain", "error", err)
 		msg.ParseMode = ""
 		sent, err = b.api.Send(msg)
 		if err != nil {

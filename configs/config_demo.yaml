@@ -1,0 +1,77 @@
+telegram:
+  token: "" # Set via TELEGRAM_BOT_TOKEN env var
+  allowed_chat_ids: [] # Empty = allow all
+  alert_chat_ids: []   # Chats to receive alert notifications. Get your chat ID from @userinfobot
+
+# Alertmanager webhook receiver
+webhook:
+  enabled: true
+  addr: ":8080"          # HTTP server for receiving webhooks
+  bearer_token: ""       # Optional auth token. If set, Alertmanager must send Authorization: Bearer <token>
+  cluster_name: "lazy-diag"  # Shown in alert header
+  bot_name: "lazy-diagnose-k8s"  # Shown in alert header
+
+# Data source endpoints
+providers:
+  victoria_metrics_url: "http://localhost:8428"
+  victoria_logs_url: "http://localhost:9428"
+
+# LLM summarizer (optional — bot works without it)
+# Env vars (LLM_BACKEND, LLM_API_KEY, etc.) override these values.
+llm:
+  enabled: false
+  backend: openai
+  model: openrouter/free
+  # backend: ollama | gemini | openrouter | openai | custom
+  # backend: ollama
+  # model: gemma3:4b             # default for ollama
+  # base_url: ""                 # auto-set per backend
+
+  ## Ollama (free, local)
+  # backend: ollama
+  # model: gemma3:4b
+  # base_url: http://localhost:11434/v1
+
+  ## Gemini (free tier: 15 RPM, 1M tokens/day)
+  # backend: gemini
+  # api_key: your-gemini-api-key
+  # model: gemini-2.0-flash
+
+  ## OpenRouter (free models: 20 req/min, 200 req/day)
+  # backend: openrouter
+  # api_key: your-openrouter-key
+  # model: meta-llama/llama-3.3-70b-instruct:free
+  ## Other free models:
+  ##   google/gemma-3-27b-it:free
+  ##   nvidia/nemotron-3-super-120b-a12b:free
+  ##   mistralai/mistral-small-3.1-24b-instruct:free
+  ##   openrouter/free  (auto-select)
+
+  ## OpenAI
+  # backend: openai
+  # api_key: your-openai-key
+  # model: gpt-4o-mini
+
+  ## Custom (any OpenAI-compatible endpoint)
+  # backend: custom
+  # base_url: http://your-server:8080/v1
+  # model: your-model
+  # api_key: your-key
+
+mcp:
+  kubernetes:
+    command: "npx"
+    args: ["-y", "@anthropic/kubernetes-mcp-server"]
+    timeout: 30
+  logs:
+    command: "victoria-logs-mcp"
+    args: []
+    env:
+      VICTORIA_LOGS_URL: "http://localhost:9428"
+    timeout: 30
+  metrics:
+    command: "victoria-metrics-mcp"
+    args: []
+    env:
+      VICTORIA_METRICS_URL: "http://localhost:8428"
+    timeout: 30

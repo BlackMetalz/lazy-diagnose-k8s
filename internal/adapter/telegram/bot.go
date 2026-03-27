@@ -12,6 +12,7 @@ import (
 	"github.com/lazy-diagnose-k8s/internal/playbook"
 	k8sprovider "github.com/lazy-diagnose-k8s/internal/provider/kubernetes"
 	"github.com/lazy-diagnose-k8s/internal/resolver"
+	"github.com/lazy-diagnose-k8s/internal/webhook"
 )
 
 // Bot is the Telegram bot that handles diagnosis requests.
@@ -21,13 +22,14 @@ type Bot struct {
 	resolver         *resolver.Resolver
 	scanner          *k8sprovider.Provider
 	defaultNamespace string
+	alertFormat      webhook.AlertFormatConfig
 	logger           *slog.Logger
 	allowedChatIDs   map[int64]bool
 	alertChatIDs     []int64 // chats to receive alert notifications
 }
 
 // NewBot creates a new Telegram bot.
-func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, alertChatIDs []int64, logger *slog.Logger) (*Bot, error) {
+func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, alertChatIDs []int64, alertFmt webhook.AlertFormatConfig, logger *slog.Logger) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("create telegram bot: %w", err)
@@ -50,6 +52,7 @@ func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, 
 		resolver:         resolver,
 		scanner:          scanner,
 		defaultNamespace: defaultNs,
+		alertFormat:      alertFmt,
 		logger:           logger,
 		allowedChatIDs:   allowed,
 		alertChatIDs:     alertChatIDs,
@@ -112,7 +115,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	}
 
 	if parsed.Target == "" {
-		b.sendMessage(chatID, "Missing target. Example:\n  <code>/check checkout</code>\n  <code>/scan prod</code>")
+		b.sendMessage(chatID, "Missing target. Example:\n  <code>/check checkout</code>\n  <code>/scan</code>")
 		return
 	}
 
@@ -122,8 +125,34 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		ns = b.defaultNamespace
 	}
 
-	// Resolve target
+	// Resolve target: service_map → fuzzy pod search → error
 	target, err := b.resolver.Resolve(parsed.Target, ns)
+	if err != nil && b.scanner != nil {
+		// Fuzzy search pods
+		matches, fuzzyErr := b.scanner.FuzzyFindPod(ctx, parsed.Target, ns)
+		if fuzzyErr == nil && len(matches) > 0 {
+			if matches[0].Score >= 80 {
+				// High confidence match — use directly
+				target = &domain.Target{
+					Name:         matches[0].Name,
+					Namespace:    matches[0].Namespace,
+					Kind:         "pod",
+					ResourceName: matches[0].Name,
+				}
+				ns = matches[0].Namespace
+				err = nil
+			} else {
+				// Show candidates
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("🔍 No exact match for <code>%s</code>. Did you mean:\n\n", esc(parsed.Target)))
+				for _, m := range matches {
+					sb.WriteString(fmt.Sprintf("  • <code>/check %s -n %s</code>  (%s)\n", esc(m.Name), esc(m.Namespace), esc(m.Phase)))
+				}
+				b.sendMessage(chatID, sb.String())
+				return
+			}
+		}
+	}
 	if err != nil {
 		b.sendMessage(chatID, FormatError(err))
 		return
@@ -163,46 +192,56 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 	}
 
-	// Run diagnosis
-	result := b.engine.Run(ctx, req, progress)
+	// Run diagnosis (static analysis by default for /check)
+	result := b.engine.RunWithoutLLM(ctx, req, progress)
 
-	// Send final result (replace progress message)
+	// Send final result with action buttons
 	formatted := FormatResult(result)
+	keyboard := buildPostDiagnosisKeyboard(ns, target.ResourceName)
 	if progressMsg != 0 {
-		b.editMessage(chatID, progressMsg, formatted)
+		b.editMessageWithKeyboard(chatID, progressMsg, formatted, keyboard)
 	} else {
-		b.sendMessage(chatID, formatted)
+		b.sendMessageWithKeyboard(chatID, formatted, keyboard)
 	}
 }
 
 func (b *Bot) handleScan(ctx context.Context, chatID int64, parsed ParsedMessage) {
 	ns := parsed.Namespace
-	if ns == "" {
-		ns = b.defaultNamespace
-	}
 
 	if b.scanner == nil {
 		b.sendMessage(chatID, FormatError(fmt.Errorf("K8s provider not available, cannot scan")))
 		return
 	}
 
-	progressMsg := b.sendMessage(chatID, fmt.Sprintf("🔍 Scanning namespace <b>%s</b>...", esc(ns)))
+	scanAll := ns == ""
+	label := ns
+	if scanAll {
+		label = "all namespaces"
+	}
+
+	progressMsg := b.sendMessage(chatID, fmt.Sprintf("🔍 Scanning <b>%s</b>...", esc(label)))
 	start := time.Now()
 
-	unhealthy, err := b.scanner.ScanNamespace(ctx, ns)
+	var unhealthy []k8sprovider.UnhealthyPod
+	var err error
+	if scanAll {
+		unhealthy, err = b.scanner.ScanAllNamespaces(ctx)
+		ns = "all"
+	} else {
+		unhealthy, err = b.scanner.ScanNamespace(ctx, ns)
+	}
 	if err != nil {
-		b.sendMessage(chatID, FormatError(fmt.Errorf("scan %s: %w", ns, err)))
+		b.sendMessage(chatID, FormatError(fmt.Errorf("scan %s: %w", label, err)))
 		return
 	}
 
 	// Convert to ScanResult
 	var results []ScanResult
-	seen := make(map[string]bool) // dedupe by owner
+	seen := make(map[string]bool) // dedupe by owner+namespace
 	for _, u := range unhealthy {
-		// Dedupe: show one pod per owner (deployment/statefulset)
-		key := u.OwnerName
-		if key == "" {
-			key = u.Name
+		key := u.Namespace + "/" + u.OwnerName
+		if u.OwnerName == "" {
+			key = u.Namespace + "/" + u.Name
 		}
 		if seen[key] {
 			continue
@@ -227,6 +266,27 @@ func (b *Bot) handleScan(ctx context.Context, chatID int64, parsed ParsedMessage
 	} else {
 		b.sendMessage(chatID, formatted)
 	}
+}
+
+// sendReply sends a message as a reply to another message (native Telegram reply).
+func (b *Bot) sendReply(chatID int64, replyToMsgID int, text string) int {
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "HTML"
+	msg.DisableWebPagePreview = true
+	if replyToMsgID > 0 {
+		msg.ReplyToMessageID = replyToMsgID
+	}
+
+	sent, err := b.api.Send(msg)
+	if err != nil {
+		msg.ParseMode = ""
+		sent, err = b.api.Send(msg)
+		if err != nil {
+			b.logger.Error("failed to send reply", "error", err)
+			return 0
+		}
+	}
+	return sent.MessageID
 }
 
 func (b *Bot) sendMessage(chatID int64, text string) int {

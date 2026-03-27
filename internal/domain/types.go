@@ -67,30 +67,57 @@ func (e *EvidenceBundle) HasMetrics() bool { return e.MetricsFacts != nil }
 
 // K8sFacts holds normalized Kubernetes data.
 type K8sFacts struct {
-	PodStatuses        []PodStatus       `json:"pod_statuses"`
-	Events             []K8sEvent        `json:"events"`
+	PodStatuses        []PodStatus         `json:"pod_statuses"`
+	Events             []K8sEvent          `json:"events"`
 	Conditions         []ResourceCondition `json:"conditions"`
-	RolloutStatus      *RolloutStatus    `json:"rollout_status,omitempty"`
-	ResourceRequests   *ResourceRequests `json:"resource_requests,omitempty"`
-	NodeInfo           *NodeInfo         `json:"node_info,omitempty"`
+	RolloutStatus      *RolloutStatus      `json:"rollout_status,omitempty"`
+	ResourceRequests   *ResourceRequests   `json:"resource_requests,omitempty"`
+	NodeInfo           *NodeInfo           `json:"node_info,omitempty"`
+	NodeResources      *NodeResources      `json:"node_resources,omitempty"`
+	OwnerChain         []OwnerRef          `json:"owner_chain,omitempty"` // Pod → ReplicaSet → Deployment
 }
 
 type PodStatus struct {
-	Name              string        `json:"name"`
-	Phase             string        `json:"phase"` // Running, Pending, Failed, Succeeded, Unknown
-	Ready             bool          `json:"ready"`
-	RestartCount      int           `json:"restart_count"`
-	ContainerStatuses []ContainerStatus `json:"container_statuses"`
+	Name                string             `json:"name"`
+	Phase               string             `json:"phase"` // Running, Pending, Failed, Succeeded, Unknown
+	Ready               bool               `json:"ready"`
+	RestartCount        int                `json:"restart_count"`
+	ContainerStatuses   []ContainerStatus  `json:"container_statuses"`
+	InitContainerStatuses []ContainerStatus `json:"init_container_statuses,omitempty"`
+	Conditions          []ResourceCondition `json:"conditions,omitempty"`
 }
 
 type ContainerStatus struct {
-	Name              string `json:"name"`
-	Ready             bool   `json:"ready"`
-	RestartCount      int    `json:"restart_count"`
-	State             string `json:"state"`     // running, waiting, terminated
-	Reason            string `json:"reason"`    // OOMKilled, CrashLoopBackOff, Error, etc.
-	ExitCode          int    `json:"exit_code"`
-	LastTermination   string `json:"last_termination,omitempty"`
+	Name            string   `json:"name"`
+	Image           string   `json:"image,omitempty"` // full image reference
+	Ready           bool     `json:"ready"`
+	RestartCount    int      `json:"restart_count"`
+	State           string   `json:"state"`     // running, waiting, terminated
+	Reason          string   `json:"reason"`    // OOMKilled, CrashLoopBackOff, Error, etc.
+	Message         string   `json:"message,omitempty"` // detailed state message
+	ExitCode        int      `json:"exit_code"`
+	LastTermination string   `json:"last_termination,omitempty"`
+	LastExitCode    int      `json:"last_exit_code,omitempty"`
+	// Environment variable issues (missing ConfigMap/Secret refs)
+	EnvErrors       []string `json:"env_errors,omitempty"`
+	// Logs fetched directly from K8s (not VictoriaLogs)
+	CurrentLogs     []string `json:"current_logs,omitempty"`
+	PreviousLogs    []string `json:"previous_logs,omitempty"`
+}
+
+// OwnerRef tracks the owner chain: Pod → ReplicaSet → Deployment
+type OwnerRef struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+// NodeResources holds cluster-level resource availability.
+type NodeResources struct {
+	TotalCPU       string `json:"total_cpu"`
+	TotalMemory    string `json:"total_memory"`
+	AllocatableCPU string `json:"allocatable_cpu"`
+	AllocatableMemory string `json:"allocatable_memory"`
+	NodeCount      int    `json:"node_count"`
 }
 
 type K8sEvent struct {

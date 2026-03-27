@@ -3,7 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
-	"time"
+	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/lazy-diagnose-k8s/internal/domain"
@@ -11,125 +11,95 @@ import (
 )
 
 // HandleAlert is called by the webhook server when Alertmanager fires.
-// It runs diagnosis for each target and sends results to the configured chat.
+// Sends alert notification with action buttons — does NOT auto-diagnose.
 func (b *Bot) HandleAlert(ctx context.Context, targets []webhook.AlertTarget, payload *webhook.AlertmanagerPayload) {
 	for _, chatID := range b.alertChatIDs {
 		for _, target := range targets {
-			b.diagnoseAlert(ctx, chatID, target, len(payload.Alerts))
+			b.sendAlertNotification(chatID, target, len(payload.Alerts))
 		}
 	}
 }
 
-func (b *Bot) diagnoseAlert(ctx context.Context, chatID int64, alertTarget webhook.AlertTarget, alertCount int) {
-	// Send alert notification first
-	alertMsg := webhook.FormatAlertMessage(alertTarget, alertCount)
-	b.sendMessage(chatID, alertMsg)
-
-	// Resolve target
+func (b *Bot) sendAlertNotification(chatID int64, alertTarget webhook.AlertTarget, alertCount int) {
 	ns := alertTarget.Namespace
 	if ns == "" {
 		ns = b.defaultNamespace
 	}
 
-	targetName := alertTarget.Name
-	if alertTarget.Kind != "" && alertTarget.Kind != "pod" {
-		targetName = alertTarget.Kind + "/" + alertTarget.Name
+	// Resource name for callback data
+	resource := alertTarget.Name
+	if alertTarget.Kind == "deployment" || alertTarget.Kind == "statefulset" || alertTarget.Kind == "daemonset" {
+		resource = alertTarget.Name
 	}
 
-	resolvedTarget, err := b.resolver.Resolve(targetName, ns)
-	if err != nil {
-		b.logger.Warn("failed to resolve alert target, trying raw name",
-			"target", targetName, "error", err)
-		// Fallback: construct target directly
-		resolvedTarget = &domain.Target{
-			Name:         alertTarget.Name,
-			Namespace:    ns,
-			Kind:         alertTarget.Kind,
-			ResourceName: alertTarget.Name,
-		}
-	}
+	// Format alert message
+	msg := webhook.FormatAlertMessage(alertTarget, alertCount, b.alertFormat)
 
-	// Classify intent from alert name
-	intent := classifyAlertIntent(alertTarget.AlertName)
+	// Build action buttons
+	keyboard := buildAlertKeyboard(ns, resource)
 
-	req := &domain.DiagnosisRequest{
-		ID:        fmt.Sprintf("alert-%s-%d", alertTarget.Fingerprint(), time.Now().UnixMilli()),
-		ChatID:    chatID,
-		RawText:   fmt.Sprintf("[Alert] %s: %s", alertTarget.AlertName, alertTarget.Summary),
-		Intent:    intent,
-		Target:    resolvedTarget,
-		CreatedAt: time.Now(),
-	}
+	b.sendMessageWithKeyboard(chatID, msg, keyboard)
 
-	// Send progress
-	progressMsg := b.sendMessage(chatID, fmt.Sprintf("🔍 Auto-diagnosing %s...", resolvedTarget.FullName()))
+	b.logger.Info("alert notification sent",
+		"chat_id", chatID,
+		"alert", alertTarget.AlertName,
+		"target", fmt.Sprintf("%s/%s/%s", ns, alertTarget.Kind, alertTarget.Name),
+	)
+}
 
-	progress := func(text string) {
-		b.logger.Info("alert diagnosis progress", "alert", alertTarget.AlertName, "status", text)
-		if progressMsg != 0 {
-			b.editMessage(chatID, progressMsg, fmt.Sprintf("🔍 Auto-diagnosing %s...\n%s", resolvedTarget.FullName(), text))
-		}
-	}
+// buildAlertKeyboard creates the 3-action button row for alerts.
+func buildAlertKeyboard(ns, resource string) tgbotapi.InlineKeyboardMarkup {
+	aiData := fmt.Sprintf("ai:%s:%s", ns, resource)
+	staticData := fmt.Sprintf("static:%s:%s", ns, resource)
+	logsData := fmt.Sprintf("logs:%s:%s", ns, resource)
 
-	// Run diagnosis
-	result := b.engine.Run(ctx, req, progress)
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🤖 AI Investigation", aiData),
+			tgbotapi.NewInlineKeyboardButtonData("📊 Static Analysis", staticData),
+			tgbotapi.NewInlineKeyboardButtonData("📜 Logs", logsData),
+		),
+	)
+}
 
-	// Format result with inline buttons
-	formatted := FormatResult(result)
+// buildPostDiagnosisKeyboard creates buttons shown after a diagnosis result.
+// Only AI + Logs — Static already ran, Scan NS is separate concern.
+func buildPostDiagnosisKeyboard(ns, resource string) tgbotapi.InlineKeyboardMarkup {
+	aiData := fmt.Sprintf("ai:%s:%s", ns, resource)
+	logsData := fmt.Sprintf("logs:%s:%s", ns, resource)
 
-	// Add inline keyboard
-	keyboard := buildDiagnosisKeyboard(resolvedTarget, ns)
-
-	if progressMsg != 0 {
-		b.editMessageWithKeyboard(chatID, progressMsg, formatted, keyboard)
-	} else {
-		b.sendMessageWithKeyboard(chatID, formatted, keyboard)
-	}
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🤖 AI Investigation", aiData),
+			tgbotapi.NewInlineKeyboardButtonData("📜 Logs", logsData),
+		),
+	)
 }
 
 func classifyAlertIntent(alertName string) domain.Intent {
-	// Map common alert names to intents
 	intent := domain.ClassifyIntent(alertName)
 	if intent != domain.IntentUnknown {
 		return intent
 	}
 
-	// Common kube-state-metrics alert patterns
 	switch {
-	case contains(alertName, "CrashLoopBackOff", "OOMKilled", "PodCrash", "ContainerRestart", "KubePodCrashLooping"):
+	case containsAny(alertName, "CrashLoopBackOff", "OOMKilled", "PodCrash", "ContainerRestart", "KubePodCrashLooping"):
 		return domain.IntentCrashLoop
-	case contains(alertName, "Pending", "Unschedulable", "FailedScheduling", "KubePodNotReady"):
+	case containsAny(alertName, "Pending", "Unschedulable", "FailedScheduling", "KubePodNotReady"):
 		return domain.IntentPending
-	case contains(alertName, "Rollout", "Deploy", "Revision", "KubeDeploymentReplicasMismatch"):
+	case containsAny(alertName, "Rollout", "Deploy", "Revision", "KubeDeploymentReplicasMismatch"):
 		return domain.IntentRolloutRegression
 	default:
-		return domain.IntentCrashLoop // default
+		return domain.IntentCrashLoop
 	}
 }
 
-func contains(s string, substrs ...string) bool {
+func containsAny(s string, substrs ...string) bool {
+	lower := strings.ToLower(s)
 	for _, sub := range substrs {
-		if len(s) >= len(sub) {
-			for i := 0; i <= len(s)-len(sub); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
+		if strings.Contains(lower, strings.ToLower(sub)) {
+			return true
 		}
 	}
 	return false
-}
-
-func buildDiagnosisKeyboard(target *domain.Target, ns string) tgbotapi.InlineKeyboardMarkup {
-	rerunData := fmt.Sprintf("rerun:%s:%s", ns, target.ResourceName)
-	logsData := fmt.Sprintf("logs:%s:%s", ns, target.ResourceName)
-	scanData := fmt.Sprintf("scan:%s", ns)
-
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🔄 Rerun", rerunData),
-			tgbotapi.NewInlineKeyboardButtonData("📜 Logs", logsData),
-			tgbotapi.NewInlineKeyboardButtonData("🔍 Scan NS", scanData),
-		),
-	)
 }

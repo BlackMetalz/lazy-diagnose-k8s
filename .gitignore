@@ -4,3 +4,4 @@ bin/
 *.out
 .env
 configs/config.local.yaml
+config.yaml

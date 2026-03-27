@@ -45,12 +45,16 @@ func ParseAlertmanagerPayload(body []byte) (*AlertmanagerPayload, error) {
 // AlertTarget extracts the K8s target from alert labels.
 // Tries common label patterns used in kube-state-metrics and recording rules.
 type AlertTarget struct {
-	Name      string
-	Namespace string
-	Kind      string // deployment, pod, statefulset, etc.
-	AlertName string
-	Severity  string
-	Summary   string
+	Name        string
+	Namespace   string
+	Kind        string // deployment, pod, statefulset, etc.
+	PodName     string // specific pod name if available
+	Container   string // container name if available
+	AlertName   string
+	Severity    string
+	Summary     string
+	Description string
+	StartsAt    time.Time
 }
 
 // Fingerprint returns a short identifier for deduplication.
@@ -89,14 +93,15 @@ func extractTarget(alert Alert) AlertTarget {
 	t := AlertTarget{
 		AlertName: alert.Labels["alertname"],
 		Severity:  alert.Labels["severity"],
+		StartsAt:  alert.StartsAt,
 	}
 
-	// Summary from annotations
-	if v, ok := alert.Annotations["summary"]; ok {
-		t.Summary = v
-	} else if v, ok := alert.Annotations["description"]; ok {
-		t.Summary = v
-	}
+	// Summary + description from annotations
+	t.Summary = firstOf(alert.Annotations, "summary")
+	t.Description = firstOf(alert.Annotations, "description")
+
+	// Container name
+	t.Container = firstOf(alert.Labels, "container", "container_name")
 
 	// Try to find the K8s target from labels
 	// Priority: pod > deployment > statefulset > daemonset > container
@@ -105,10 +110,10 @@ func extractTarget(alert Alert) AlertTarget {
 
 	// Pod-level alerts (kube-state-metrics)
 	if pod := firstOf(alert.Labels, "pod", "pod_name"); pod != "" {
+		t.PodName = pod
 		t.Name = pod
 		t.Kind = "pod"
-		// Try to get owner (deployment name) from pod name
-		// e.g. checkout-7f8b9c-x4k2p → checkout
+		// Try to get owner (deployment name)
 		if deploy := firstOf(alert.Labels, "deployment", "created_by_name"); deploy != "" {
 			t.Name = deploy
 			t.Kind = "deployment"
@@ -154,40 +159,144 @@ func extractTarget(alert Alert) AlertTarget {
 	return t
 }
 
+// AlertFormatConfig holds display settings for alert messages.
+type AlertFormatConfig struct {
+	BotName     string
+	ClusterName string
+}
+
 // FormatAlertMessage formats an alert for Telegram display.
-func FormatAlertMessage(target AlertTarget, alertCount int) string {
+func FormatAlertMessage(target AlertTarget, alertCount int, cfg AlertFormatConfig) string {
 	var b strings.Builder
 
+	icon := severityIcon(target.Severity)
 	severity := strings.ToUpper(target.Severity)
 	if severity == "" {
 		severity = "ALERT"
 	}
 
-	icon := "🔔"
-	switch strings.ToLower(target.Severity) {
-	case "critical":
-		icon = "🚨"
-	case "warning":
-		icon = "⚠️"
+	botName := cfg.BotName
+	if botName == "" {
+		botName = "lazy-diagnose-k8s"
 	}
 
-	b.WriteString(fmt.Sprintf("%s <b>[%s] %s</b>\n", icon, severity, esc(target.AlertName)))
+	// Header: icon + bot name + severity badge
+	b.WriteString(fmt.Sprintf("%s <b>%s</b> · <code>%s</code>\n", icon, esc(botName), severity))
+	b.WriteString("─────────────────────\n")
 
+	// Alert name (prominent)
+	b.WriteString(fmt.Sprintf("<b>%s</b>\n\n", esc(target.AlertName)))
+
+	// Target info block (compact key-value with code formatting)
+	if cfg.ClusterName != "" {
+		b.WriteString(fmt.Sprintf("Cluster:    <code>%s</code>\n", esc(cfg.ClusterName)))
+	}
 	if target.Namespace != "" {
-		b.WriteString(fmt.Sprintf("Target: <code>%s/%s/%s</code>\n", esc(target.Namespace), esc(target.Kind), esc(target.Name)))
-	} else {
-		b.WriteString(fmt.Sprintf("Target: <code>%s/%s</code>\n", esc(target.Kind), esc(target.Name)))
+		b.WriteString(fmt.Sprintf("Namespace:  <code>%s</code>\n", esc(target.Namespace)))
+	}
+	if target.PodName != "" {
+		b.WriteString(fmt.Sprintf("Pod:        <code>%s</code>\n", esc(target.PodName)))
+	} else if target.Name != "" {
+		b.WriteString(fmt.Sprintf("%-11s <code>%s</code>\n", capitalize(target.Kind)+":", esc(target.Name)))
+	}
+	if target.Container != "" {
+		b.WriteString(fmt.Sprintf("Container:  <code>%s</code>\n", esc(target.Container)))
 	}
 
-	if target.Summary != "" {
-		b.WriteString(fmt.Sprintf("\n%s\n", esc(target.Summary)))
+	// Message (cleaned, in a separate block)
+	msg := target.Description
+	if msg == "" {
+		msg = target.Summary
+	}
+	if msg != "" {
+		msg = cleanMessage(msg, target)
+		if msg != "" {
+			b.WriteString(fmt.Sprintf("\n<i>%s</i>\n", esc(msg)))
+		}
 	}
 
+	// Footer: firing duration + alert count
+	var footer []string
+	if !target.StartsAt.IsZero() {
+		dur := time.Since(target.StartsAt).Round(time.Second)
+		footer = append(footer, fmt.Sprintf("🔥 %s", formatDuration(dur)))
+	}
 	if alertCount > 1 {
-		b.WriteString(fmt.Sprintf("\n<i>(%d alerts in this group)</i>\n", alertCount))
+		footer = append(footer, fmt.Sprintf("%d alerts", alertCount))
+	}
+	if len(footer) > 0 {
+		b.WriteString(fmt.Sprintf("\n%s\n", strings.Join(footer, " · ")))
 	}
 
 	return b.String()
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// AlertRef returns a short one-line reference for quoting in investigation results.
+func AlertRef(target AlertTarget) string {
+	ref := target.AlertName
+	if target.Namespace != "" && target.Name != "" {
+		ref += " · " + target.Namespace + "/" + target.Name
+	}
+	return ref
+}
+
+// cleanMessage removes redundant namespace/pod info that's already shown in the target line.
+func cleanMessage(msg string, target AlertTarget) string {
+	// Remove patterns like "Pod namespace/podname" since already displayed
+	if target.PodName != "" {
+		msg = strings.ReplaceAll(msg, target.Namespace+"/"+target.PodName, target.PodName)
+		msg = strings.ReplaceAll(msg, "Pod "+target.PodName+" ", "")
+		msg = strings.ReplaceAll(msg, "pod "+target.PodName+" ", "")
+	}
+	if target.Container != "" {
+		msg = strings.ReplaceAll(msg, "Container "+target.Container+" in ", "")
+		msg = strings.ReplaceAll(msg, "container "+target.Container+" in ", "")
+	}
+	msg = strings.TrimSpace(msg)
+	// Remove leading "in pod xyz" if it starts with that
+	if strings.HasPrefix(msg, "in pod ") || strings.HasPrefix(msg, "in Pod ") {
+		if idx := strings.Index(msg, " "); idx > 0 {
+			if idx2 := strings.Index(msg[idx+1:], " "); idx2 > 0 {
+				msg = strings.TrimSpace(msg[idx+1+idx2:])
+			}
+		}
+	}
+	return msg
+}
+
+func severityIcon(severity string) string {
+	switch strings.ToLower(severity) {
+	case "critical":
+		return "🚨"
+	case "warning":
+		return "⚠️"
+	case "info":
+		return "ℹ️"
+	default:
+		return "🔔"
+	}
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	if mins == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, mins)
 }
 
 func firstOf(m map[string]string, keys ...string) string {
