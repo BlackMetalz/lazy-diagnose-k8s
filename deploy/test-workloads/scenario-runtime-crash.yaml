@@ -1,0 +1,58 @@
+# Scenario: Runtime crash after running for a while
+#
+# Simulates an app that starts successfully, runs for ~30s, then crashes
+# with a runtime error (e.g., panic, unhandled exception, memory corruption).
+#
+# Expected state: CrashLoopBackOff
+# Hypothesis: app_crash
+# Bot command: /check api-runtime-crash
+#
+# What the bot should detect:
+#   - Container runs for 30s+ before crashing (not instant exit)
+#   - Logs show normal startup then fatal error
+#   - exitCode: 1
+#   - CrashLoopBackOff with increasing restarts
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-runtime-crash
+  namespace: demo-staging
+  labels:
+    app: api-runtime-crash
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-runtime-crash
+  template:
+    metadata:
+      labels:
+        app: api-runtime-crash
+    spec:
+      containers:
+        - name: api
+          image: busybox:1.37
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[INFO] Starting api-server v3.2.1..."
+              echo "[INFO] Loading configuration... OK"
+              echo "[INFO] Connecting to database... OK"
+              echo "[INFO] Listening on :8080"
+              sleep 10
+              echo "[INFO] Processing request batch #1... OK"
+              sleep 10
+              echo "[INFO] Processing request batch #2... OK"
+              sleep 10
+              echo "[WARN] Memory pressure detected, usage=247Mi/256Mi"
+              echo "[ERROR] goroutine 42 [running]:"
+              echo "[ERROR] runtime: out of memory allocating 16384-byte block"
+              echo "[FATAL] panic: runtime error: cannot allocate memory"
+              exit 1
+          resources:
+            requests:
+              memory: "16Mi"
+            limits:
+              memory: "32Mi"

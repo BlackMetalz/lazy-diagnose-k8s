@@ -60,7 +60,7 @@ scenarios-status:
 	@echo ""
 	@echo "=== Expected ==="
 	@echo "  demo-prod:    checkout=CrashLoop  worker=Pending  payment=Running"
-	@echo "  demo-staging: api-config-missing=CrashLoop  api-dependency-fail=CrashLoop"
+	@echo "  demo-staging: api-config-missing=CrashLoop  api-dependency-fail=CrashLoop  api-runtime-crash=CrashLoop  api-init-fail=Init:CrashLoop"
 	@echo "  demo-infra:   api-bad-image=ImagePull  api-probe-fail=CrashLoop  ml-worker-taint=Pending  db-pvc-pending=Pending"
 
 demo-alerts:

@@ -7,7 +7,7 @@ Pre-built K8s failure scenarios for testing the diagnosis bot. Distributed acros
 | Namespace | Purpose | Scenarios |
 |---|---|---|
 | `demo-prod` | Core app simulation | checkout (OOM), worker (Pending), payment (healthy) |
-| `demo-staging` | Config / dependency issues | api-config-missing, api-dependency-fail |
+| `demo-staging` | Config / dependency / runtime | api-config-missing, api-dependency-fail, api-runtime-crash, api-init-fail |
 | `demo-infra` | Image / probe / scheduling | api-bad-image, api-probe-fail, ml-worker-taint, db-pvc-pending |
 
 ## Quick Reference
@@ -19,6 +19,8 @@ Pre-built K8s failure scenarios for testing the diagnosis bot. Distributed acros
 | Healthy baseline | demo-prod | Running | - | `/check payment` |
 | Config/env missing | demo-staging | CrashLoopBackOff | config_env_missing | `/check api-config-missing` |
 | Dependency unreachable | demo-staging | CrashLoopBackOff | dependency_connectivity | `/check api-dependency-fail` |
+| Runtime crash | demo-staging | CrashLoopBackOff | app_crash | `/check api-runtime-crash` |
+| Init container fail | demo-staging | Init:CrashLoopBackOff | init_container_fail | `/check api-init-fail` |
 | Bad image tag | demo-infra | ErrImagePull | bad_image_tag | `/check api-bad-image` |
 | Liveness probe fail | demo-infra | Running + restarts | probe_issue | `/check api-probe-fail` |
 | Node selector mismatch | demo-infra | Pending | affinity_issue | `/check ml-worker-taint` |
@@ -120,6 +122,26 @@ Pod references a PVC with `storageClassName: non-existent-storage-class`. No pro
 **What the bot should detect:**
 - Events: `"unbound PersistentVolumeClaims"`
 - Pod stuck in Pending
+
+### Runtime Crash (scenario-runtime-crash.yaml)
+
+App starts normally, processes requests for ~30s, then crashes with a runtime panic (simulating memory leak or unhandled error).
+
+**What the bot should detect:**
+- Container ran for 30s+ before crashing (not instant exit)
+- Logs show normal startup, then `[FATAL] panic: runtime error`
+- `exitCode: 1`
+- CrashLoopBackOff with increasing restarts
+
+### Init Container Fail (scenario-init-fail.yaml)
+
+Init container runs a database migration that fails. Main container never starts.
+
+**What the bot should detect:**
+- Init container in CrashLoopBackOff
+- Main container never started
+- Init container logs: `"migration failed"`, `"dirty database state"`
+- `exitCode: 1`
 
 ### Rollout Regression (rollout-regression.yaml)
 

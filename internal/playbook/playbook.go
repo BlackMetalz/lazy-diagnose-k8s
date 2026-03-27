@@ -197,6 +197,11 @@ func recommendSteps(intent domain.Intent, result *domain.DiagnosisResult) []stri
 			"Check init container logs for errors",
 			"Verify init container image and command",
 		}
+	case "app_crash":
+		return []string{
+			"Check container logs for stack trace or panic",
+			"Review recent code changes that may cause runtime errors",
+		}
 	case "permission_error":
 		return []string{
 			"Check ServiceAccount permissions (RBAC)",

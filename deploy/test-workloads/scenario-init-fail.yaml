@@ -1,0 +1,60 @@
+# Scenario: Init container failure
+#
+# Simulates a database migration init container that fails.
+# Main container never starts because init hasn't completed.
+#
+# Expected state: Init:CrashLoopBackOff
+# Hypothesis: init_container_fail
+# Bot command: /check api-init-fail
+#
+# What the bot should detect:
+#   - Init container failed (state=waiting or terminated with error)
+#   - Main container never started
+#   - Init container logs show migration error
+#   - exitCode: 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-init-fail
+  namespace: demo-staging
+  labels:
+    app: api-init-fail
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-init-fail
+  template:
+    metadata:
+      labels:
+        app: api-init-fail
+    spec:
+      initContainers:
+        - name: db-migrate
+          image: busybox:1.37
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[migrate] Running database migrations..."
+              echo "[migrate] Connecting to postgres-primary:5432..."
+              sleep 3
+              echo "[migrate] ERROR: relation 'users' already exists"
+              echo "[migrate] FATAL: migration 20260301_add_users_table failed"
+              echo "[migrate] Aborting — cannot proceed with dirty database state"
+              exit 1
+          resources:
+            requests:
+              memory: "16Mi"
+            limits:
+              memory: "32Mi"
+      containers:
+        - name: api
+          image: busybox:1.37
+          command: ["sleep", "3600"]
+          resources:
+            requests:
+              memory: "16Mi"
+            limits:
+              memory: "32Mi"

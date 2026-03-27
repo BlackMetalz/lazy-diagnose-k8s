@@ -219,7 +219,20 @@ Base workloads create 3 test scenarios:
 | `worker` | Pending (requests 100 CPU, 256Gi RAM) | Pending playbook |
 | `payment` | Running (healthy) | Baseline / no issue |
 
-Additional scenarios available — see [deploy/test-workloads/SCENARIOS.md](deploy/test-workloads/SCENARIOS.md).
+Additional scenarios (deployed via `make scenarios`):
+
+| Workload | Expected State | Diagnosis Case |
+|---|---|---|
+| `api-config-missing` | CrashLoopBackOff | Missing env var |
+| `api-dependency-fail` | CrashLoopBackOff | Connection refused |
+| `api-runtime-crash` | CrashLoopBackOff | App runs 30s then crashes |
+| `api-init-fail` | Init:CrashLoopBackOff | Init container migration fail |
+| `api-bad-image` | ErrImagePull | Image not found |
+| `api-probe-fail` | Running + restarts | Liveness probe fail |
+| `ml-worker-taint` | Pending | Node selector mismatch |
+| `db-pvc-pending` | Pending | PVC not bound |
+
+Full details — see [deploy/test-workloads/SCENARIOS.md](deploy/test-workloads/SCENARIOS.md).
 
 **Verify:**
 ```bash
