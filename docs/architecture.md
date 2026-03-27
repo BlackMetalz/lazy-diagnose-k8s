@@ -172,7 +172,7 @@ The bot does not pattern-match text strings or let an LLM decide what to query. 
 | **Telegram Bot** | `internal/adapter/telegram/bot.go` | Message parsing, /check with fuzzy search fallback, /scan dispatch, progress updates |
 | **K8s Scanner** | `internal/provider/kubernetes/scanner.go` | Namespace scanning (all non-system or specific), fuzzy pod search by name/owner/label |
 | **Intent Classifier** | `internal/domain/intent.go` | Classify user message into crashloop/pending/rollout/unknown |
-| **Target Resolver** | `internal/resolver/resolver.go` | Map user input to concrete K8s resource via service_map or exact match |
+| **Target Resolver** | `internal/resolver/resolver.go` | Map user input to concrete K8s resource via exact match or fuzzy search |
 | **Playbook Engine** | `internal/playbook/playbook.go` | Orchestrate the full diagnosis run, coordinate providers and analyzer |
 | **Provider Collector** | `internal/provider/provider.go` | Concurrent data collection with timeout + degraded mode |
 | **K8s Provider** | `internal/provider/kubernetes/k8s.go` | Pod status, conditions, containers, init containers, env ref errors, current+previous logs, events, owner chain, rollout, resources, node resources — all via client-go |
@@ -183,7 +183,7 @@ The bot does not pattern-match text strings or let an LLM decide what to query. 
 | **Summarizer** | `internal/diagnosis/summarizer.go` | LLM-based summarization (OpenAI-compatible API) |
 | **Redactor** | `internal/diagnosis/redact.go` | Strip sensitive data (tokens, passwords, keys) from evidence |
 | **Command Composer** | `internal/composer/composer.go` | Generate kubectl commands based on diagnosis |
-| **Config** | `internal/config/config.go` | YAML config loading (service_map, LLM settings, etc.) |
+| **Config** | `internal/config/config.go` | YAML config loading (LLM settings, providers, webhook, etc.) |
 | **Domain** | `internal/domain/types.go` | Shared types (Target, EvidenceBundle, DiagnosisResult, K8sFacts, ContainerStatus) |
 
 ## Key Design Decisions
@@ -219,7 +219,7 @@ All three providers (K8s, metrics, logs) run in parallel with individual timeout
 
 ### Fuzzy pod search as resolver fallback
 
-When `/check foo` doesn't match a service_map entry or exact resource name, the bot falls back to fuzzy pod search across the cluster. Matching scores: exact name (100) > prefix (80) > contains (60) > owner name (50) > app label (40). High-confidence matches (score >= 80) are used directly; lower matches are presented as suggestions.
+When `/check foo` doesn't match an exact resource name, the bot falls back to fuzzy pod search across the cluster. Matching scores: exact name (100) > prefix (80) > contains (60) > owner name (50) > app label (40). High-confidence matches (score >= 80) are used directly; lower matches are presented as suggestions.
 
 ### Namespace scanning
 

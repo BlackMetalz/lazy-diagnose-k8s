@@ -23,8 +23,6 @@ spec:
           env:
             - name: CONFIG_PATH
               value: /etc/lazy-diagnose-k8s/config.yaml
-            - name: SERVICE_MAP_PATH
-              value: /etc/lazy-diagnose-k8s/service_map.yaml
             - name: PLAYBOOK_RULES_PATH
               value: /etc/lazy-diagnose-k8s/playbook_rules.yaml
             - name: VICTORIA_METRICS_URL
@@ -36,6 +34,12 @@ spec:
                 secretKeyRef:
                   name: lazy-diagnose-secrets
                   key: TELEGRAM_BOT_TOKEN
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: lazy-diagnose-secrets
+                  key: TELEGRAM_CHAT_ID
+                  optional: true
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:

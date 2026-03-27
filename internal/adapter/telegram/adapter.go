@@ -394,8 +394,8 @@ Kubernetes diagnosis via Telegram. Collects data from K8s, metrics, and logs —
 • Rollout regression — failed deploy, image pull error, resource pressure
 
 <b>Target can be:</b>
-• Service name from service_map (checkout, payment, worker...)
-• Exact deployment/pod name
+• Deployment/pod name (checkout, payment, worker...)
+• Exact resource name
 • Path format: <code>deployment/checkout</code> or <code>prod/deployment/checkout</code>
 
 <b>Reading results:</b>

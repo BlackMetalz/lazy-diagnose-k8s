@@ -57,10 +57,6 @@ kubectl apply -f deploy/test-workloads/
 kubectl delete -f deploy/test-workloads/
 ```
 
-## Adding to service_map.yaml
-
-For the bot to resolve these targets by name, add them to `configs/service_map.yaml` or use exact resource names like `deployment/api-config-missing`.
-
 ## Scenario Details
 
 ### OOMKilled (workloads.yaml — checkout)

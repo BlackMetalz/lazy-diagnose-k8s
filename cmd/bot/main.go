@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/lazy-diagnose-k8s/internal/adapter/telegram"
@@ -34,6 +36,18 @@ func main() {
 	// Override telegram token from env if set
 	if token := os.Getenv("TELEGRAM_BOT_TOKEN"); token != "" {
 		cfg.Telegram.Token = token
+	}
+
+	// Override alert chat IDs from env (comma-separated)
+	if chatIDs := os.Getenv("TELEGRAM_CHAT_ID"); chatIDs != "" {
+		var ids []int64
+		for _, s := range strings.Split(chatIDs, ",") {
+			s = strings.TrimSpace(s)
+			if id, err := strconv.ParseInt(s, 10, 64); err == nil {
+				ids = append(ids, id)
+			}
+		}
+		cfg.Telegram.AlertChatIDs = ids
 	}
 
 	if cfg.Telegram.Token == "" {

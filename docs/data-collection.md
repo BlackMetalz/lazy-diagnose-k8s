@@ -355,4 +355,4 @@ Searches across pods with scoring:
 - Owner (ReplicaSet/Deployment) name matches → 50
 - App label matches → 40
 
-Used as fallback when `/check` target doesn't resolve through service_map.
+Used as fallback when `/check` target doesn't match an exact resource name.

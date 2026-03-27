@@ -28,34 +28,63 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 	action := parts[0]
 
+	// Dedup: skip if same operation is already in-flight for this chat
+	inflightKey := fmt.Sprintf("%d:%s", chatID, data)
+	if _, loaded := b.inflight.LoadOrStore(inflightKey, true); loaded {
+		b.logger.Info("skipping duplicate callback", "key", inflightKey)
+		return
+	}
+
 	switch action {
 	case "ai":
 		if len(parts) < 3 {
+			b.inflight.Delete(inflightKey)
 			return
 		}
-		go b.handleAIInvestigation(ctx, chatID, alertMsgID, parts[1], parts[2])
+		go func() {
+			defer b.inflight.Delete(inflightKey)
+			b.handleAIInvestigation(ctx, chatID, alertMsgID, parts[1], parts[2])
+		}()
 
 	case "static":
 		if len(parts) < 3 {
+			b.inflight.Delete(inflightKey)
 			return
 		}
-		go b.handleStaticAnalysis(ctx, chatID, alertMsgID, parts[1], parts[2])
+		go func() {
+			defer b.inflight.Delete(inflightKey)
+			b.handleStaticAnalysis(ctx, chatID, alertMsgID, parts[1], parts[2])
+		}()
 
 	case "logs":
 		if len(parts) < 3 {
+			b.inflight.Delete(inflightKey)
 			return
 		}
-		go b.handleShowLogs(ctx, chatID, alertMsgID, parts[1], parts[2])
+		go func() {
+			defer b.inflight.Delete(inflightKey)
+			b.handleShowLogs(ctx, chatID, alertMsgID, parts[1], parts[2])
+		}()
 
 	case "scan":
 		ns := parts[1]
-		go b.handleScan(ctx, chatID, ParsedMessage{Command: "scan", Namespace: ns})
+		go func() {
+			defer b.inflight.Delete(inflightKey)
+			b.handleScan(ctx, chatID, ParsedMessage{Command: "scan", Namespace: ns})
+		}()
 
 	case "rerun":
 		if len(parts) < 3 {
+			b.inflight.Delete(inflightKey)
 			return
 		}
-		go b.handleStaticAnalysis(ctx, chatID, alertMsgID, parts[1], parts[2])
+		go func() {
+			defer b.inflight.Delete(inflightKey)
+			b.handleStaticAnalysis(ctx, chatID, alertMsgID, parts[1], parts[2])
+		}()
+
+	default:
+		b.inflight.Delete(inflightKey)
 	}
 }
 

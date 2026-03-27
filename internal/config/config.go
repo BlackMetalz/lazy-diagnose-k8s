@@ -14,7 +14,6 @@ type Config struct {
 	LLM        LLMConfig        `yaml:"llm"`
 	MCP        MCPConfig        `yaml:"mcp"`
 	Providers  ProvidersConfig  `yaml:"providers"`
-	ServiceMap ServiceMap       `yaml:"service_map"`
 	Playbooks  PlaybookRules    `yaml:"playbooks"`
 	Redaction  RedactionRules   `yaml:"redaction"`
 }
@@ -61,21 +60,6 @@ type MCPServerConfig struct {
 	Timeout int      `yaml:"timeout"` // seconds
 }
 
-// ServiceMap maps logical service names to K8s resources.
-type ServiceMap struct {
-	Services []ServiceEntry `yaml:"services"`
-}
-
-type ServiceEntry struct {
-	Name            string            `yaml:"name"`
-	Aliases         []string          `yaml:"aliases,omitempty"`
-	Namespace       string            `yaml:"namespace"`
-	PrimaryResource string            `yaml:"primary_resource"` // e.g. "deployment/checkout"
-	Selectors       map[string]string `yaml:"selectors,omitempty"`
-	MetricsJob      string            `yaml:"metrics_job,omitempty"`
-	RolloutTarget   string            `yaml:"rollout_target,omitempty"`
-}
-
 // PlaybookRules holds scoring configuration for each playbook.
 type PlaybookRules struct {
 	CrashLoop         []HypothesisRule `yaml:"crashloop"`
@@ -106,22 +90,6 @@ type RedactionPattern struct {
 	Replace string `yaml:"replace"`
 }
 
-// Lookup finds a service entry by name or alias.
-func (sm *ServiceMap) Lookup(name string) *ServiceEntry {
-	for i := range sm.Services {
-		s := &sm.Services[i]
-		if s.Name == name {
-			return s
-		}
-		for _, alias := range s.Aliases {
-			if alias == name {
-				return s
-			}
-		}
-	}
-	return nil
-}
-
 // LoadConfig loads the main app config from a YAML file.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -133,19 +101,6 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	return &cfg, nil
-}
-
-// LoadServiceMap loads service map from a YAML file.
-func LoadServiceMap(path string) (*ServiceMap, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read service map %s: %w", path, err)
-	}
-	var sm ServiceMap
-	if err := yaml.Unmarshal(data, &sm); err != nil {
-		return nil, fmt.Errorf("parse service map %s: %w", path, err)
-	}
-	return &sm, nil
 }
 
 // LoadPlaybookRules loads playbook scoring rules from a YAML file.

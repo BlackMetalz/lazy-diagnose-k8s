@@ -1,13 +1,15 @@
 telegram:
   token: "" # Set via TELEGRAM_BOT_TOKEN env var
   allowed_chat_ids: [] # Empty = allow all
-  alert_chat_ids: []   # Chats to receive alert notifications. Get your chat ID from @userinfobot
+  alert_chat_ids: []   # Set via TELEGRAM_CHAT_ID env var (comma-separated). Get your chat ID from @userinfobot
 
 # Alertmanager webhook receiver
 webhook:
   enabled: true
-  addr: ":8080"          # HTTP server for receiving webhooks
-  bearer_token: ""       # Optional auth token. If set, Alertmanager must send Authorization: Bearer <token>
+  addr: ":8080"            # HTTP server for receiving webhooks
+  bearer_token: ""         # Optional auth token
+  cluster_name: "lazy-diag"  # Shown in alert header
+  bot_name: "lazy-diagnose-k8s"  # Shown in alert header
 
 # Data source endpoints
 providers:

@@ -70,9 +70,8 @@ resolver.Resolve("checkout", "prod")
 
 `resolver.go:Resolve()` tries in order:
 1. **Exact resource** — `deployment/checkout` or `prod/deployment/checkout`
-2. **service_map.yaml lookup** — matches name or aliases
-3. **Fuzzy pod search** (fallback) — searches pods across namespace by name, owner, label
-4. **Error** — returns hint to use exact name or add to service_map
+2. **Fuzzy pod search** (fallback) — searches pods across namespace by name, owner, label
+3. **Error** — returns hint to use exact name
 
 **Fuzzy search scoring:**
 | Score | Match type |
@@ -404,7 +403,7 @@ The bot never blocks on a single failed provider. Each runs with its own timeout
 ```
 RECEIVED
   → PARSE_MESSAGE
-  → RESOLVE_TARGET (exact → service_map → fuzzy search → error)
+  → RESOLVE_TARGET (exact → fuzzy search → error)
   → CLASSIFY_INTENT
   → COLLECT_EVIDENCE (parallel, with timeouts)
   → ANALYZE_EVIDENCE (5-step: container → events → logs → metrics → correlate)

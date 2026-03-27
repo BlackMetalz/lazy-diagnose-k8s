@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -26,6 +27,7 @@ type Bot struct {
 	logger           *slog.Logger
 	allowedChatIDs   map[int64]bool
 	alertChatIDs     []int64 // chats to receive alert notifications
+	inflight         sync.Map // tracks in-flight callback operations (key: "action:ns:name")
 }
 
 // NewBot creates a new Telegram bot.

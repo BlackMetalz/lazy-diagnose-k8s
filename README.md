@@ -67,11 +67,13 @@ The bot runs an HTTP server (default `:8080`) that receives Alertmanager webhook
 3. Sends alert notification + diagnosis result to configured Telegram chats
 4. Attaches inline action buttons (Rerun / Logs / Scan NS)
 
-**Configure in `config.yaml`:**
-```yaml
-telegram:
-  alert_chat_ids: [YOUR_CHAT_ID]  # where alerts go
+**Configure via environment variables:**
+```bash
+export TELEGRAM_CHAT_ID=YOUR_CHAT_ID   # where alerts go (comma-separated for multiple)
+```
 
+```yaml
+# config.yaml
 webhook:
   enabled: true
   addr: ":8080"
@@ -142,7 +144,7 @@ All config in `configs/config.yaml`. Env vars override config file values.
 | Setting | Config key | Env var | Default |
 |---|---|---|---|
 | Telegram token | `telegram.token` | `TELEGRAM_BOT_TOKEN` | (required) |
-| Alert chat IDs | `telegram.alert_chat_ids` | | `[]` |
+| Alert chat IDs | `telegram.alert_chat_ids` | `TELEGRAM_CHAT_ID` | `[]` |
 | Webhook enabled | `webhook.enabled` | | `true` |
 | Webhook address | `webhook.addr` | | `:8080` |
 | VictoriaMetrics | `providers.victoria_metrics_url` | `VICTORIA_METRICS_URL` | `http://localhost:8428` |
@@ -215,7 +217,7 @@ internal/
   playbook/                         Playbook orchestration
   provider/                         Data collection (K8s, metrics, logs)
   resolver/                         Target resolver (name -> K8s resource)
-configs/                            Sample configs (config.yaml, service_map, playbook_rules)
+configs/                            Sample configs (config.yaml, redaction_rules)
 deploy/
   bot/                              K8s deployment manifests for the bot
   monitoring/                       kube-state-metrics, vmagent, vlagent, alertmanager, vmalert

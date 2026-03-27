@@ -259,6 +259,7 @@ curl -s 'http://localhost:9428/select/logsql/query' -d 'query=kubernetes.pod_nam
 # 2. /newbot → copy the token
 
 export TELEGRAM_BOT_TOKEN="your-token-here"
+export TELEGRAM_CHAT_ID="your-chat-id"  # Get from @userinfobot on Telegram
 make run
 ```
 
