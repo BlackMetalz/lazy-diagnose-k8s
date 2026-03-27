@@ -4,54 +4,47 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lazy-diagnose-k8s/internal/config"
 	"github.com/lazy-diagnose-k8s/internal/domain"
 )
 
 // Resolver resolves user input into a concrete K8s target.
-type Resolver struct {
-	serviceMap *config.ServiceMap
-}
+type Resolver struct{}
 
-// New creates a new Resolver with the given service map.
-func New(sm *config.ServiceMap) *Resolver {
-	return &Resolver{serviceMap: sm}
+// New creates a new Resolver.
+func New() *Resolver {
+	return &Resolver{}
 }
 
 // Resolve attempts to resolve the raw target string into a Target.
-// Strategy: exact resource match → service_map lookup → error with hint.
+// Handles exact resource paths: deployment/checkout, prod/deployment/checkout.
+// For plain names (e.g. "checkout"), returns a best-guess target — caller should
+// use fuzzy pod search as fallback.
 func (r *Resolver) Resolve(raw string, defaultNamespace string) (*domain.Target, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, fmt.Errorf("empty target")
 	}
 
-	// 1. Check if it looks like an exact resource reference: kind/name or namespace/kind/name
-	if t, ok := r.parseExactResource(raw, defaultNamespace); ok {
+	// 1. Exact resource path: kind/name or namespace/kind/name
+	if t, ok := parseExactResource(raw, defaultNamespace); ok {
 		return t, nil
 	}
 
-	// 2. Lookup in service_map
-	if entry := r.serviceMap.Lookup(raw); entry != nil {
-		return r.entryToTarget(entry), nil
-	}
-
-	// 3. Try case-insensitive match
-	if entry := r.serviceMap.Lookup(strings.ToLower(raw)); entry != nil {
-		return r.entryToTarget(entry), nil
-	}
-
-	return nil, fmt.Errorf(
-		"target '%s' not found. Use exact deployment/pod name or add it to service_map.yaml",
-		raw,
-	)
+	// 2. Plain name — treat as deployment name (fuzzy search will refine)
+	return &domain.Target{
+		Name:         raw,
+		Namespace:    defaultNamespace,
+		Kind:         "deployment",
+		ResourceName: raw,
+		Selectors:    map[string]string{"app": raw},
+	}, nil
 }
 
 // parseExactResource handles formats like:
 //   - "deployment/checkout" → kind=deployment, name=checkout
 //   - "pod/checkout-abc-123" → kind=pod, name=checkout-abc-123
 //   - "prod/deployment/checkout" → ns=prod, kind=deployment, name=checkout
-func (r *Resolver) parseExactResource(raw string, defaultNs string) (*domain.Target, bool) {
+func parseExactResource(raw string, defaultNs string) (*domain.Target, bool) {
 	parts := strings.SplitN(raw, "/", 3)
 
 	switch len(parts) {
@@ -79,27 +72,6 @@ func (r *Resolver) parseExactResource(raw string, defaultNs string) (*domain.Tar
 		}, true
 	}
 	return nil, false
-}
-
-func (r *Resolver) entryToTarget(entry *config.ServiceEntry) *domain.Target {
-	kind, name := parseResourceRef(entry.PrimaryResource)
-	return &domain.Target{
-		Name:         entry.Name,
-		Namespace:    entry.Namespace,
-		Kind:         kind,
-		ResourceName: name,
-		Selectors:    entry.Selectors,
-		MetricsJob:   entry.MetricsJob,
-		RolloutTarget: entry.RolloutTarget,
-	}
-}
-
-func parseResourceRef(ref string) (kind, name string) {
-	parts := strings.SplitN(ref, "/", 2)
-	if len(parts) == 2 {
-		return normalizeKind(parts[0]), parts[1]
-	}
-	return "deployment", ref
 }
 
 func normalizeKind(k string) string {

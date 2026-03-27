@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -54,7 +55,8 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target) (*do
 	// 1. Get pods (status, containers, init containers, conditions, env errors, image)
 	pods, err := p.getPods(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("get pods: %w", err)
+		return nil, fmt.Errorf("get pods (ns=%s, kind=%s, name=%s, selectors=%v): %w",
+			target.Namespace, target.Kind, target.ResourceName, target.Selectors, err)
 	}
 	facts.PodStatuses = pods
 
@@ -100,11 +102,12 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target) (*do
 	// 6. Owner chain (Pod → ReplicaSet → Deployment)
 	facts.OwnerChain = p.getOwnerChain(ctx, target)
 
-	// 7. Node info + resources for pending pods
+	// 7. Node info + resources for pending pods, and PVC names
 	for _, pod := range pods {
 		if pod.Phase == "Pending" {
 			facts.NodeInfo = p.getNodeInfo(ctx, target)
 			facts.NodeResources = p.getNodeResources(ctx)
+			facts.PVCNames = p.getPVCNames(ctx, target)
 			break
 		}
 	}
@@ -142,11 +145,25 @@ func (p *Provider) getPods(ctx context.Context, target *domain.Target) ([]domain
 		LabelSelector: labelSelector,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list pods (ns=%s, selector=%s): %w", target.Namespace, labelSelector, err)
 	}
 
 	for i := range pods.Items {
 		podStatuses = append(podStatuses, convertPodStatus(&pods.Items[i]))
+	}
+
+	// Log empty results for debugging
+	if len(podStatuses) == 0 {
+		// Try without label selector as fallback — maybe labels don't match
+		allPods, err2 := p.client.CoreV1().Pods(target.Namespace).List(ctx, metav1.ListOptions{})
+		if err2 == nil {
+			// Search by name prefix
+			for i := range allPods.Items {
+				if strings.HasPrefix(allPods.Items[i].Name, target.ResourceName) {
+					podStatuses = append(podStatuses, convertPodStatus(&allPods.Items[i]))
+				}
+			}
+		}
 	}
 
 	return podStatuses, nil
@@ -500,7 +517,44 @@ func (p *Provider) fetchLogs(ctx context.Context, namespace, podName, containerN
 	var lines []string
 	scanner := bufio.NewScanner(io.LimitReader(stream, 256*1024)) // 256KB limit
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+		line := scanner.Text()
+		// Strip containerd:// URIs from K8s internal messages — they add noise
+		if strings.Contains(line, "unable to retrieve container logs") {
+			line = stripContainerRuntimeURI(line)
+		}
+		lines = append(lines, line)
 	}
 	return lines
+}
+
+// getPVCNames extracts PersistentVolumeClaim names from pod volumes.
+func (p *Provider) getPVCNames(ctx context.Context, target *domain.Target) []string {
+	pods, err := p.client.CoreV1().Pods(target.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", target.ResourceName),
+	})
+	if err != nil || len(pods.Items) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, pod := range pods.Items {
+		for _, vol := range pod.Spec.Volumes {
+			if vol.PersistentVolumeClaim != nil {
+				name := vol.PersistentVolumeClaim.ClaimName
+				if !seen[name] {
+					seen[name] = true
+					names = append(names, name)
+				}
+			}
+		}
+	}
+	return names
+}
+
+// reContainerRuntimeURI matches runtime URIs like containerd://abc123... or docker://abc123...
+var reContainerRuntimeURI = regexp.MustCompile(`\s+for\s+\S+://\S+`)
+
+// stripContainerRuntimeURI removes "for containerd://..." or "for docker://..." from log lines.
+func stripContainerRuntimeURI(line string) string {
+	return reContainerRuntimeURI.ReplaceAllString(line, "")
 }

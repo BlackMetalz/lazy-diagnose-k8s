@@ -119,32 +119,20 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
-	// Resolve namespace: flag > default
+	// Resolve namespace: flag > fuzzy search > default
 	ns := parsed.Namespace
-	if ns == "" {
-		ns = b.defaultNamespace
-	}
 
-	// Resolve target: service_map → fuzzy pod search → error
-	target, err := b.resolver.Resolve(parsed.Target, ns)
-	if err != nil && b.scanner != nil {
-		// Fuzzy search pods
-		matches, fuzzyErr := b.scanner.FuzzyFindPod(ctx, parsed.Target, ns)
-		if fuzzyErr == nil && len(matches) > 0 {
-			if matches[0].Score >= 80 {
-				// High confidence match — use directly
-				target = &domain.Target{
-					Name:         matches[0].Name,
-					Namespace:    matches[0].Namespace,
-					Kind:         "pod",
-					ResourceName: matches[0].Name,
-				}
+	// If no namespace specified, try fuzzy search to find the right namespace + pod
+	if ns == "" && b.scanner != nil {
+		matches, err := b.scanner.FuzzyFindPod(ctx, parsed.Target, "") // search all namespaces
+		if err == nil && len(matches) > 0 {
+			if matches[0].Score >= 60 {
 				ns = matches[0].Namespace
-				err = nil
-			} else {
-				// Show candidates
+			}
+			// If low score, show candidates
+			if matches[0].Score < 60 {
 				var sb strings.Builder
-				sb.WriteString(fmt.Sprintf("🔍 No exact match for <code>%s</code>. Did you mean:\n\n", esc(parsed.Target)))
+				sb.WriteString(fmt.Sprintf("🔍 Multiple matches for <code>%s</code>:\n\n", esc(parsed.Target)))
 				for _, m := range matches {
 					sb.WriteString(fmt.Sprintf("  • <code>/check %s -n %s</code>  (%s)\n", esc(m.Name), esc(m.Namespace), esc(m.Phase)))
 				}
@@ -153,6 +141,12 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			}
 		}
 	}
+	if ns == "" {
+		ns = b.defaultNamespace
+	}
+
+	// Resolve target
+	target, err := b.resolver.Resolve(parsed.Target, ns)
 	if err != nil {
 		b.sendMessage(chatID, FormatError(err))
 		return

@@ -75,6 +75,7 @@ type K8sFacts struct {
 	NodeInfo           *NodeInfo           `json:"node_info,omitempty"`
 	NodeResources      *NodeResources      `json:"node_resources,omitempty"`
 	OwnerChain         []OwnerRef          `json:"owner_chain,omitempty"` // Pod → ReplicaSet → Deployment
+	PVCNames           []string            `json:"pvc_names,omitempty"`   // PersistentVolumeClaim names used by pods
 }
 
 type PodStatus struct {

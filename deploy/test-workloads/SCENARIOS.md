@@ -1,34 +1,42 @@
 # Test Scenarios
 
-Pre-built K8s failure scenarios for testing the diagnosis bot. All deploy to namespace `prod`.
+Pre-built K8s failure scenarios for testing the diagnosis bot. Distributed across 3 namespaces.
+
+## Namespace Layout
+
+| Namespace | Purpose | Scenarios |
+|---|---|---|
+| `demo-prod` | Core app simulation | checkout (OOM), worker (Pending), payment (healthy) |
+| `demo-staging` | Config / dependency issues | api-config-missing, api-dependency-fail |
+| `demo-infra` | Image / probe / scheduling | api-bad-image, api-probe-fail, ml-worker-taint, db-pvc-pending |
 
 ## Quick Reference
 
-| Scenario | File | Expected State | Playbook | Hypothesis |
+| Scenario | Namespace | Expected State | Hypothesis | Bot command |
 |---|---|---|---|---|
-| OOMKilled | `workloads.yaml` (checkout) | CrashLoopBackOff | crashloop | oom_resource |
-| Insufficient resources | `workloads.yaml` (worker) | Pending | pending | insufficient_resources |
-| Healthy baseline | `workloads.yaml` (payment) | Running | - | - |
-| Config/env missing | `scenario-config-missing.yaml` | CrashLoopBackOff | crashloop | config_env_missing |
-| Liveness probe fail | `scenario-probe-fail.yaml` | Running + restarts | crashloop | probe_issue |
-| Bad image tag | `scenario-bad-image.yaml` | ErrImagePull | crashloop | bad_image |
-| Dependency unreachable | `scenario-dependency-fail.yaml` | CrashLoopBackOff | crashloop | dependency_connectivity |
-| Node selector mismatch | `scenario-taint-mismatch.yaml` | Pending | pending | affinity_issue |
-| PVC not bound | `scenario-pvc-pending.yaml` | Pending | pending | pvc_binding |
-| Rollout regression | `rollout-regression.yaml` | ImagePullBackOff | rollout | release_regression |
+| OOMKilled | demo-prod | CrashLoopBackOff | oom_resource | `/check checkout` |
+| Insufficient resources | demo-prod | Pending | insufficient_resources | `/check worker` |
+| Healthy baseline | demo-prod | Running | - | `/check payment` |
+| Config/env missing | demo-staging | CrashLoopBackOff | config_env_missing | `/check api-config-missing` |
+| Dependency unreachable | demo-staging | CrashLoopBackOff | dependency_connectivity | `/check api-dependency-fail` |
+| Bad image tag | demo-infra | ErrImagePull | bad_image_tag | `/check api-bad-image` |
+| Liveness probe fail | demo-infra | Running + restarts | probe_issue | `/check api-probe-fail` |
+| Node selector mismatch | demo-infra | Pending | affinity_issue | `/check ml-worker-taint` |
+| PVC not bound | demo-infra | Pending | pvc_binding | `/check db-pvc-pending` |
+| Rollout regression | demo-prod | ImagePullBackOff | release_regression | `/deploy payment` |
 
 ## Usage
 
 ```bash
-# Make sure namespace exists
-kubectl create namespace prod --dry-run=client -o yaml | kubectl apply -f -
+# Deploy all scenarios (creates namespaces automatically)
+make scenarios
 
-# Deploy a scenario
+# Check status
+make scenarios-status
+
+# Or deploy individually
 kubectl apply -f deploy/test-workloads/scenario-config-missing.yaml
-
-# Wait a few seconds, then test
-# (use the app name as target in the bot)
-# /check api-config-missing
+# then: /check api-config-missing
 
 # Clean up
 kubectl delete -f deploy/test-workloads/scenario-config-missing.yaml

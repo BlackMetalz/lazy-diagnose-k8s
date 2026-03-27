@@ -3,6 +3,7 @@ package playbook
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -15,17 +16,19 @@ import (
 // ProgressFunc is called to report progress to the user.
 type ProgressFunc func(msg string)
 
-// Engine runs diagnosis playbooks.
+// Engine runs diagnosis using evidence-first analysis.
 type Engine struct {
-	collector *provider.Collector
-	diagnosis *diagnosis.Engine
+	collector  *provider.Collector
+	summarizer *diagnosis.Summarizer
+	logger     *slog.Logger
 }
 
 // New creates a new playbook engine.
-func New(collector *provider.Collector, diagEngine *diagnosis.Engine) *Engine {
+func New(collector *provider.Collector, summarizer *diagnosis.Summarizer, logger *slog.Logger) *Engine {
 	return &Engine{
-		collector: collector,
-		diagnosis: diagEngine,
+		collector:  collector,
+		summarizer: summarizer,
+		logger:     logger,
 	}
 }
 
@@ -33,7 +36,7 @@ func New(collector *provider.Collector, diagEngine *diagnosis.Engine) *Engine {
 func (e *Engine) GetCollector() *provider.Collector { return e.collector }
 
 // HasSummarizer returns true if LLM summarizer is configured.
-func (e *Engine) HasSummarizer() bool { return e.diagnosis.HasSummarizer() }
+func (e *Engine) HasSummarizer() bool { return e.summarizer != nil }
 
 // HasLogsProvider returns true if logs provider is available.
 func (e *Engine) HasLogsProvider() bool {
@@ -48,76 +51,68 @@ func (e *Engine) CollectLogs(ctx context.Context, target *domain.Target, timeRan
 	return e.collector.Logs.CollectFacts(ctx, target, timeRange)
 }
 
-// SummarizeWithLLM sends evidence directly to LLM for free-form analysis.
+// SummarizeWithLLM sends evidence to LLM for free-form analysis (AI Investigation).
 func (e *Engine) SummarizeWithLLM(ctx context.Context, intent domain.Intent, bundle *domain.EvidenceBundle) (string, error) {
-	return e.diagnosis.SummarizeWithLLM(ctx, intent, bundle)
+	if e.summarizer == nil {
+		return "", fmt.Errorf("LLM summarizer not configured")
+	}
+	// Run analyzer first to get hypothesis for context
+	result := diagnosis.AnalyzeEvidence(bundle)
+	return e.summarizer.Summarize(ctx, intent, bundle, result)
 }
 
-// RunWithoutLLM runs diagnosis with template summary only (no LLM call).
+// RunWithoutLLM runs evidence-first diagnosis (Static Analysis). No LLM call.
 func (e *Engine) RunWithoutLLM(ctx context.Context, req *domain.DiagnosisRequest, progress ProgressFunc) *domain.DiagnosisResult {
 	start := time.Now()
 	if progress == nil {
 		progress = func(string) {}
 	}
 
-	timeRange := domain.TimeRange{
-		From: time.Now().Add(-1 * time.Hour),
-		To:   time.Now(),
-	}
-	if req.Intent == domain.IntentRolloutRegression {
-		timeRange.From = time.Now().Add(-3 * time.Hour)
-	}
+	bundle := e.collectBundle(ctx, req, progress)
 
-	progress("Collecting data from K8s, logs, metrics...")
-	bundle := e.collector.Collect(ctx, req.Target, timeRange)
-	bundle.CollectedAt = time.Now()
-
-	var statusParts []string
-	for _, ps := range bundle.ProviderStatuses {
-		if ps.Available {
-			statusParts = append(statusParts, fmt.Sprintf("✓ %s (%s)", ps.Name, ps.Duration.Round(time.Millisecond)))
-		} else {
-			statusParts = append(statusParts, fmt.Sprintf("✗ %s: %s", ps.Name, ps.Error))
-		}
+	// Debug: log what we collected
+	podCount := 0
+	eventCount := 0
+	if bundle.K8sFacts != nil {
+		podCount = len(bundle.K8sFacts.PodStatuses)
+		eventCount = len(bundle.K8sFacts.Events)
 	}
-	if len(statusParts) > 0 {
-		progress(strings.Join(statusParts, "\n"))
-	}
+	e.logger.Info("evidence collected",
+		"target", req.Target.FullName(),
+		"pods", podCount,
+		"events", eventCount,
+		"k8s", bundle.HasK8s(),
+		"logs", bundle.HasLogs(),
+		"metrics", bundle.HasMetrics(),
+	)
 
 	progress("Analyzing evidence...")
 	result := diagnosis.AnalyzeEvidence(bundle)
 	result.RequestID = req.ID
 	result.SuggestedCommands = composer.Compose(req.Intent, result)
-	result.RecommendedSteps = e.recommendSteps(req.Intent, result)
+	result.RecommendedSteps = recommendSteps(req.Intent, result)
 	result.Duration = time.Since(start)
 	return result
 }
 
-// Run executes the diagnosis playbook for the given intent and target.
+// Run executes diagnosis (same as RunWithoutLLM — kept for compatibility).
 func (e *Engine) Run(ctx context.Context, req *domain.DiagnosisRequest, progress ProgressFunc) *domain.DiagnosisResult {
-	start := time.Now()
+	return e.RunWithoutLLM(ctx, req, progress)
+}
 
-	if progress == nil {
-		progress = func(string) {}
-	}
-
-	// Default time range: last 1 hour
+func (e *Engine) collectBundle(ctx context.Context, req *domain.DiagnosisRequest, progress ProgressFunc) *domain.EvidenceBundle {
 	timeRange := domain.TimeRange{
 		From: time.Now().Add(-1 * time.Hour),
 		To:   time.Now(),
 	}
-
-	// For rollout regression, look at a wider window
 	if req.Intent == domain.IntentRolloutRegression {
 		timeRange.From = time.Now().Add(-3 * time.Hour)
 	}
 
-	// Step 1: Collect evidence (all providers run concurrently)
 	progress("Collecting data from K8s, logs, metrics...")
 	bundle := e.collector.Collect(ctx, req.Target, timeRange)
 	bundle.CollectedAt = time.Now()
 
-	// Report what we got
 	var statusParts []string
 	for _, ps := range bundle.ProviderStatuses {
 		if ps.Available {
@@ -130,106 +125,84 @@ func (e *Engine) Run(ctx context.Context, req *domain.DiagnosisRequest, progress
 		progress(strings.Join(statusParts, "\n"))
 	}
 
-	// Step 2: Diagnose
-	progress("Analyzing...")
-	result := e.diagnosis.DiagnoseWithContext(ctx, req.Intent, bundle)
-	result.RequestID = req.ID
-
-	// Step 3: Compose commands
-	result.SuggestedCommands = composer.Compose(req.Intent, result)
-
-	// Step 4: Recommended steps
-	result.RecommendedSteps = e.recommendSteps(req.Intent, result)
-
-	result.Duration = time.Since(start)
-	return result
+	return bundle
 }
 
-func (e *Engine) recommendSteps(intent domain.Intent, result *domain.DiagnosisResult) []string {
-	var steps []string
-
+func recommendSteps(intent domain.Intent, result *domain.DiagnosisResult) []string {
 	if result.PrimaryHypothesis == nil {
 		return []string{"Check manually using commands below", "Inspect logs and events for clues"}
 	}
 
-	switch intent {
-	case domain.IntentCrashLoop:
-		switch result.PrimaryHypothesis.ID {
-		case "oom_resource":
-			steps = []string{
-				"Increase memory limit for the container",
-				"Check application for memory leaks",
-				"Consider optimizing memory usage",
-			}
-		case "config_env_missing":
-			steps = []string{
-				"Verify ConfigMap/Secret is mounted correctly",
-				"Check environment variables in deployment spec",
-			}
-		case "dependency_connectivity":
-			steps = []string{
-				"Check if dependency service is healthy",
-				"Verify network policies allow traffic",
-				"Check DNS resolution in the cluster",
-			}
-		case "probe_issue":
-			steps = []string{
-				"Review liveness/readiness probe config",
-				"Increase initialDelaySeconds if app starts slowly",
-				"Verify probe endpoint is responding",
-			}
-		case "bad_image":
-			steps = []string{
-				"Verify image tag exists in the registry",
-				"Check imagePullSecrets configuration",
-				"Verify network connectivity to the registry",
-			}
+	switch result.PrimaryHypothesis.ID {
+	case "oom_resource":
+		return []string{
+			"Increase memory limit for the container",
+			"Check application for memory leaks",
+			"Consider optimizing memory usage",
 		}
-
-	case domain.IntentPending:
-		switch result.PrimaryHypothesis.ID {
-		case "insufficient_resources":
-			steps = []string{
-				"Scale down other workloads or scale up the cluster",
-				"Reduce resource requests if reasonable",
-				"Check namespace resource quotas",
-			}
-		case "taint_mismatch":
-			steps = []string{
-				"Add matching toleration to pod spec",
-				"Or remove taint from node if not needed",
-			}
-		case "pvc_binding":
-			steps = []string{
-				"Check if PersistentVolume is available",
-				"Verify StorageClass exists and provisioner is working",
-			}
+	case "config_env_missing":
+		return []string{
+			"Verify ConfigMap/Secret is mounted correctly",
+			"Check environment variables in deployment spec",
 		}
-
-	case domain.IntentRolloutRegression:
-		switch result.PrimaryHypothesis.ID {
-		case "release_regression":
-			steps = []string{
-				"Rollback to previous revision using command below",
-				"Diff current vs previous revision",
-				"Review application changes in the new release",
-			}
-		case "dependency_exposed":
-			steps = []string{
-				"Check if dependency services are healthy",
-				"New release may have exposed a pre-existing dependency bug",
-			}
-		case "resource_pressure":
-			steps = []string{
-				"Increase resource limits for the new release",
-				"Check if new release increased resource consumption",
-			}
+	case "dependency_connectivity":
+		return []string{
+			"Check if dependency service is healthy",
+			"Verify network policies allow traffic",
+			"Check DNS resolution in the cluster",
 		}
+	case "probe_issue":
+		return []string{
+			"Review liveness/readiness probe config",
+			"Increase initialDelaySeconds if app starts slowly",
+			"Verify probe endpoint is responding",
+		}
+	case "bad_image", "bad_image_tag":
+		return []string{
+			"Verify image tag exists in the registry",
+			"Check imagePullSecrets configuration",
+		}
+	case "bad_image_auth":
+		return []string{
+			"Check imagePullSecrets and registry credentials",
+			"Verify service account has pull permissions",
+		}
+	case "bad_image_network":
+		return []string{
+			"Check registry hostname and DNS",
+			"Verify network connectivity to registry",
+		}
+	case "insufficient_resources":
+		return []string{
+			"Scale down other workloads or scale up the cluster",
+			"Reduce resource requests if reasonable",
+		}
+	case "taint_mismatch":
+		return []string{
+			"Add matching toleration to pod spec",
+			"Or remove taint from node if not needed",
+		}
+	case "affinity_issue":
+		return []string{
+			"Check nodeSelector/affinity matches available nodes",
+			"Remove or adjust nodeSelector constraint",
+		}
+	case "pvc_binding":
+		return []string{
+			"Check if PersistentVolume is available",
+			"Verify StorageClass exists and provisioner is working",
+		}
+	case "init_container_fail":
+		return []string{
+			"Check init container logs for errors",
+			"Verify init container image and command",
+		}
+	case "permission_error":
+		return []string{
+			"Check ServiceAccount permissions (RBAC)",
+			"Verify file/directory permissions in container",
+		}
+	default:
+		return []string{"Check logs and events using commands below"}
 	}
-
-	if len(steps) == 0 {
-		steps = []string{"Check manually using commands below"}
-	}
-
-	return steps
 }

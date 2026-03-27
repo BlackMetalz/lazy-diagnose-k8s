@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: checkout
-  namespace: demo
+  namespace: demo-prod
   labels:
     app: checkout
 spec:
@@ -32,7 +32,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: worker
-  namespace: demo
+  namespace: demo-prod
   labels:
     app: worker
 spec:
@@ -59,7 +59,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: payment
-  namespace: demo
+  namespace: demo-prod
   labels:
     app: payment
 spec:

@@ -46,8 +46,9 @@ func composeCrashLoop(ns, resource string, t *domain.Target, result *domain.Diag
 		switch result.PrimaryHypothesis.ID {
 		case "oom_resource":
 			cmds = append(cmds,
-				fmt.Sprintf("kubectl describe %s -n %s | grep -A5 'Resources:'", resource, ns),
+				fmt.Sprintf("kubectl get %s -n %s -o jsonpath='{.spec.containers[*].resources}'", resource, ns),
 				fmt.Sprintf("kubectl top pods -n %s --containers | grep %s", ns, t.ResourceName),
+				fmt.Sprintf("kubectl describe %s -n %s | grep -A5 'Limits\\|Requests'", resource, ns),
 			)
 		case "config_env_missing":
 			cmds = append(cmds,

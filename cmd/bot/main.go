@@ -41,24 +41,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load service map
-	serviceMapPath := envOr("SERVICE_MAP_PATH", "configs/service_map.yaml")
-	serviceMap, err := config.LoadServiceMap(serviceMapPath)
-	if err != nil {
-		logger.Warn("failed to load service map, using empty", "error", err)
-		serviceMap = &config.ServiceMap{}
-	}
-
-	// Load playbook rules
-	playbookPath := envOr("PLAYBOOK_RULES_PATH", "configs/playbook_rules.yaml")
-	playbookRules, err := config.LoadPlaybookRules(playbookPath)
-	if err != nil {
-		logger.Warn("failed to load playbook rules, using empty", "error", err)
-		playbookRules = &config.PlaybookRules{}
-	}
-
 	// Build components
-	targetResolver := resolver.New(serviceMap)
+	targetResolver := resolver.New()
 
 	// Build providers
 	collector := &provider.Collector{}
@@ -83,25 +67,22 @@ func main() {
 	collector.Logs = logsprovider.New(vlURL)
 	logger.Info("logs provider initialized", "url", vlURL)
 
-	diagEngine := diagnosis.New(playbookRules).WithLogger(logger)
-
-	// LLM Summarizer (optional)
-	// Priority: env var > config file > disabled
+	// LLM Summarizer (optional — for AI Investigation button)
+	var summarizer *diagnosis.Summarizer
 	llmCfg := resolveLLMConfig(cfg)
 	if llmCfg.Backend != "" {
-		summarizer := diagnosis.NewSummarizer(diagnosis.SummarizerConfig{
+		summarizer = diagnosis.NewSummarizer(diagnosis.SummarizerConfig{
 			Backend: llmCfg.Backend,
 			BaseURL: llmCfg.BaseURL,
 			APIKey:  llmCfg.APIKey,
 			Model:   llmCfg.Model,
 		})
-		diagEngine.WithSummarizer(summarizer)
 		logger.Info("LLM summarizer enabled", "backend", summarizer.Backend(), "model", summarizer.ModelName())
 	} else {
 		logger.Info("LLM summarizer disabled (configure llm section in config.yaml or set LLM_BACKEND env var)")
 	}
 
-	playbookEngine := playbook.New(collector, diagEngine)
+	playbookEngine := playbook.New(collector, summarizer, logger)
 
 	// Create Telegram bot
 	defaultNs := envOr("DEFAULT_NAMESPACE", "prod")

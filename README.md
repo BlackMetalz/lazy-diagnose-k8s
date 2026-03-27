@@ -36,9 +36,9 @@ make run
 | `/deploy <deployment>` | Check rollout status |
 | `/help` | Show usage guide |
 
-**Target** can be a service name from `service_map.yaml`, an exact resource name, or a path like `deployment/checkout` or `prod/deployment/checkout`.
+**Target** can be a pod/deployment name, or a path like `deployment/checkout` or `prod/deployment/checkout`. The bot auto-discovers the namespace via fuzzy pod search.
 
-**Namespace**: defaults to `prod`. Override with `-n staging` or set `DEFAULT_NAMESPACE` env var.
+**Namespace**: auto-detected from fuzzy search. Override with `-n demo-prod` or set `DEFAULT_NAMESPACE` env var.
 
 **Examples:**
 ```

@@ -14,7 +14,7 @@ The bot does not pattern-match text strings or let an LLM decide what to query. 
 
 ```
 ┌──────────────────────────────────────┐  ┌─────────────────────────────┐
-│          Alertmanager                │  │        Telegram              │
+│          Alertmanager                │  │        Telegram             │
 │     (fires alert webhook)           │  │    (user sends /check)       │
 └──────────────────┬───────────────────┘  └──────────────┬──────────────┘
                    │ POST /webhook/alertmanager           │
@@ -24,10 +24,10 @@ The bot does not pattern-match text strings or let an LLM decide what to query. 
 │                                                                      │
 │  Webhook Server (:8080)          Telegram Adapter (polling)          │
 │  • Parse Alertmanager payload    • Parse message → command+target    │
-│  • Extract K8s target from       • Handle /check, /scan, /deploy    │
+│  • Extract K8s target from       • Handle /check, /scan, /deploy     │
 │    alert labels                  • Handle inline button callbacks    │
-│  • Send NOTIFICATION only        • Fuzzy pod search as fallback     │
-│    (no auto-diagnosis)           • Send progress + final result     │
+│  • Send NOTIFICATION only        • Fuzzy pod search as fallback      │
+│    (no auto-diagnosis)           • Send progress + final result      │
 │                                                                      │
 │  Files: internal/webhook/        Files: internal/adapter/telegram/   │
 └──────────────────────┬───────────────────────────────────────────────┘
@@ -38,11 +38,11 @@ The bot does not pattern-match text strings or let an LLM decide what to query. 
             │   + 3 buttons)      │
             ▼                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    User Action / Command                         │
-│                                                                  │
+│                    User Action / Command                        │
+│                                                                 │
 │  3 modes (from alert buttons or /check command):                │
-│                                                                  │
-│  🤖 AI Investigation    📊 Static Analysis    📜 Logs           │
+│                                                                 │
+│  🤖 AI Investigation    📊 Static Analysis    📜 Logs            │
 │  collect evidence →     collect evidence →     query logs →     │
 │  send to LLM →          run analyzer.go →      show raw         │
 │  free-form analysis     evidence-first rules   container logs   │
@@ -50,37 +50,37 @@ The bot does not pattern-match text strings or let an LLM decide what to query. 
                        │
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                    Provider Collector                             │
+│                    Provider Collector                            │
 │                                                                  │
 │  Runs providers concurrently with per-provider timeout.          │
 │  Returns partial results if any provider fails (degraded mode).  │
 │                                                                  │
 │  File: internal/provider/provider.go                             │
 │                                                                  │
-│  ┌────────────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │   K8s Provider      │  │   Metrics    │  │   Logs       │    │
-│  │   (PRIMARY)         │  │   Provider   │  │   Provider   │    │
-│  │                     │  │              │  │              │    │
-│  │ client-go           │  │ PromQL HTTP  │  │ LogsQL HTTP  │    │
-│  │                     │  │              │  │ (fallback    │    │
-│  │ Pod status +        │  │ Restart rate │  │  for logs)   │    │
-│  │   conditions        │  │ CPU/Memory   │  │              │    │
-│  │ Container state     │  │ Error rate   │  │ Container    │    │
-│  │   + image + envErrs │  │              │  │ logs         │    │
-│  │ Init containers     │  │              │  │ Error        │    │
-│  │ Current + previous  │  │              │  │ patterns     │    │
-│  │   logs (K8s API)    │  │              │  │              │    │
-│  │ Events timeline     │  │              │  │              │    │
-│  │ Owner chain         │  │              │  │              │    │
-│  │ Rollout status      │  │              │  │              │    │
-│  │ Resources req/limit │  │              │  │              │    │
-│  │ Node resources      │  │              │  │              │    │
-│  └────────┬────────────┘  └──────┬───────┘  └──────┬───────┘    │
+│  ┌────────────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │   K8s Provider      │  │   Metrics    │ │   Logs      │     │
+│  │   (PRIMARY)         │  │   Provider   │ │   Provider   │     │
+│  │                     │  │              │  │              │     │
+│  │ client-go           │  │ PromQL HTTP  │  │ LogsQL HTTP  │     │
+│  │                     │  │              │  │ (fallback    │     │
+│  │ Pod status +        │  │ Restart rate │  │  for logs)   │     │
+│  │   conditions        │  │ CPU/Memory   │  │              │     │
+│  │ Container state     │  │ Error rate   │  │ Container    │     │
+│  │   + image + envErrs │  │              │  │ logs         │     │
+│  │ Init containers     │  │              │  │ Error        │     │
+│  │ Current + previous  │  │              │  │ patterns     │     │
+│  │   logs (K8s API)    │  │              │  │              │     │
+│  │ Events timeline     │  │              │  │              │     │
+│  │ Owner chain         │  │              │  │              │     │
+│  │ Rollout status      │  │              │  │              │     │
+│  │ Resources req/limit │  │              │  │              │     │
+│  │ Node resources      │  │              │  │              │     │
+│  └────────┬────────────┘  └──────┬───────┘  └──────┬───────┘     │
 │           │                      │                  │            │
 │           ▼                      ▼                  ▼            │
-│         K8s API           VictoriaMetrics     VictoriaLogs      │
+│         K8s API           VictoriaMetrics     VictoriaLogs       │
 │       (primary)           (localhost:8428)    (localhost:9428)   │
-│                                               (fallback only)   │
+│                                               (fallback only)    │
 └──────────────────────────────────────────────────────────────────┘
                        │
                        ▼

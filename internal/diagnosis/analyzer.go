@@ -2,6 +2,7 @@ package diagnosis
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/lazy-diagnose-k8s/internal/domain"
@@ -84,15 +85,7 @@ func analyzeContainerState(bundle *domain.EvidenceBundle) finding {
 	}
 
 	for _, pod := range bundle.K8sFacts.PodStatuses {
-		// Pending pod
-		if pod.Phase == "Pending" {
-			return finding{
-				ID: "pending", Name: "Pod stuck in Pending",
-				Score: 40, MaxScore: 100,
-				Signals: []string{"pod_phase_pending"},
-			}
-		}
-
+		// Check container statuses FIRST (more specific than phase)
 		for _, cs := range pod.ContainerStatuses {
 			// OOMKilled (from current state or last termination)
 			if cs.Reason == "OOMKilled" || cs.LastTermination == "OOMKilled" {
@@ -161,6 +154,15 @@ func analyzeContainerState(bundle *domain.EvidenceBundle) finding {
 					Score: 30, MaxScore: 100,
 					Signals: []string{"terminated", fmt.Sprintf("exit_%d", cs.ExitCode)},
 				}
+			}
+		}
+
+		// Pending pod (checked after container statuses for specificity)
+		if pod.Phase == "Pending" && len(pod.ContainerStatuses) == 0 {
+			return finding{
+				ID: "pending", Name: "Pod stuck in Pending",
+				Score: 40, MaxScore: 100,
+				Signals: []string{"pod_phase_pending"},
 			}
 		}
 
@@ -506,10 +508,10 @@ func collectDetailedEvidence(bundle *domain.EvidenceBundle) []string {
 		for _, pod := range bundle.K8sFacts.PodStatuses {
 			evidence = append(evidence, fmt.Sprintf("Pod %s: phase=%s, restarts=%d", pod.Name, pod.Phase, pod.RestartCount))
 
-			// Pod conditions (show non-True conditions)
+			// Pod conditions (show non-True, skip ContainersReady as it duplicates Ready)
 			for _, cond := range pod.Conditions {
-				if cond.Status != "True" && cond.Message != "" {
-					evidence = append(evidence, fmt.Sprintf("  Condition %s=%s: %s", cond.Type, cond.Status, truncateStr(cond.Message, 100)))
+				if cond.Status != "True" && cond.Type != "ContainersReady" {
+					evidence = append(evidence, fmt.Sprintf("  Condition %s=%s", cond.Type, cond.Status))
 				}
 			}
 
@@ -523,16 +525,13 @@ func collectDetailedEvidence(bundle *domain.EvidenceBundle) []string {
 				if cs.Reason != "" {
 					line += fmt.Sprintf(", reason=%s", cs.Reason)
 				}
-				if cs.Message != "" {
-					line += fmt.Sprintf(" (%s)", truncateStr(cs.Message, 80))
-				}
 				if exitCode(cs) != 0 {
 					line += fmt.Sprintf(", exit_code=%d", exitCode(cs))
 				}
 				evidence = append(evidence, line)
 
 				if cs.LastTermination != "" {
-					evidence = append(evidence, fmt.Sprintf("  Last termination: %s (exit_code=%d)", cs.LastTermination, cs.LastExitCode))
+					evidence = append(evidence, fmt.Sprintf("  Last termination: %s", cs.LastTermination))
 				}
 
 				// Env ref issues
@@ -574,7 +573,7 @@ func collectDetailedEvidence(bundle *domain.EvidenceBundle) []string {
 		// Events
 		for _, ev := range bundle.K8sFacts.Events {
 			if ev.Type == "Warning" {
-				evidence = append(evidence, fmt.Sprintf("Event [%s]: %s (x%d)", ev.Reason, truncateStr(ev.Message, 120), ev.Count))
+				evidence = append(evidence, fmt.Sprintf("Event [%s]: %s (x%d)", ev.Reason, truncateStr(cleanEventMessage(ev.Message), 100), ev.Count))
 			}
 		}
 
@@ -588,7 +587,13 @@ func collectDetailedEvidence(bundle *domain.EvidenceBundle) []string {
 		// Resources
 		if bundle.K8sFacts.ResourceRequests != nil {
 			rr := bundle.K8sFacts.ResourceRequests
-			evidence = append(evidence, fmt.Sprintf("Resources: cpu=%s/%s, memory=%s/%s", rr.CPURequest, rr.CPULimit, rr.MemoryRequest, rr.MemoryLimit))
+			evidence = append(evidence, fmt.Sprintf("Resources request/limit: CPU %s/%s, Memory %s/%s",
+				orNone(rr.CPURequest), orNone(rr.CPULimit), orNone(rr.MemoryRequest), orNone(rr.MemoryLimit)))
+		}
+
+		// PVC names
+		if len(bundle.K8sFacts.PVCNames) > 0 {
+			evidence = append(evidence, fmt.Sprintf("PVC: %s", strings.Join(bundle.K8sFacts.PVCNames, ", ")))
 		}
 
 		// Node resources (for Pending pods)
@@ -672,13 +677,33 @@ func generateSummary(result *domain.DiagnosisResult, bundle *domain.EvidenceBund
 
 	switch h.ID {
 	case "oom_resource":
-		parts = append(parts, "Container OOMKilled.")
-		if bundle.K8sFacts != nil && bundle.K8sFacts.ResourceRequests != nil && bundle.K8sFacts.ResourceRequests.MemoryLimit != "" {
-			parts = append(parts, fmt.Sprintf("Memory limit: %s.", bundle.K8sFacts.ResourceRequests.MemoryLimit))
+		parts = append(parts, "Container terminated by OOM Killer (exit code 137).")
+		// Show memory details from multiple sources
+		memShown := false
+		if bundle.K8sFacts != nil {
+			// Try ResourceRequests first
+			if rr := bundle.K8sFacts.ResourceRequests; rr != nil && rr.MemoryLimit != "" {
+				parts = append(parts, fmt.Sprintf("Memory limit: %s (request: %s).", rr.MemoryLimit, rr.MemoryRequest))
+				memShown = true
+			}
+		}
+		// Metrics memory usage (actual vs limit)
+		if bundle.MetricsFacts != nil && bundle.MetricsFacts.MemoryLimit != nil {
+			limitMi := *bundle.MetricsFacts.MemoryLimit / (1024 * 1024)
+			if bundle.MetricsFacts.MemoryUsage != nil {
+				usageMi := *bundle.MetricsFacts.MemoryUsage / (1024 * 1024)
+				parts = append(parts, fmt.Sprintf("Current usage: %.0fMi / %.0fMi (%.0f%%).", usageMi, limitMi, usageMi/limitMi*100))
+			} else if !memShown {
+				parts = append(parts, fmt.Sprintf("Memory limit: %.0fMi.", limitMi))
+			}
+			memShown = true
+		}
+		if !memShown {
+			parts = append(parts, "Memory limit not available — check pod spec.")
 		}
 		parts = addRestartCount(parts, bundle)
 		parts = addTopLogError(parts, bundle)
-		parts = append(parts, "Increase memory limit or fix memory leak.")
+		parts = append(parts, "Increase the memory limit or investigate the application for memory leaks.")
 
 	case "config_env_missing":
 		parts = append(parts, "Container crashes on startup — missing config or environment variable.")
@@ -736,8 +761,12 @@ func generateSummary(result *domain.DiagnosisResult, bundle *domain.EvidenceBund
 		parts = addSchedulerDetail(parts, bundle)
 
 	case "pvc_binding":
-		parts = append(parts, "Pod stuck Pending — PVC can't bind.")
-		parts = addSchedulerDetail(parts, bundle)
+		if bundle.K8sFacts != nil && len(bundle.K8sFacts.PVCNames) > 0 {
+			parts = append(parts, fmt.Sprintf("Pod stuck Pending — PVC %s can't bind.", strings.Join(bundle.K8sFacts.PVCNames, ", ")))
+		} else {
+			parts = append(parts, "Pod stuck Pending — PVC can't bind.")
+		}
+		parts = append(parts, "Check if PersistentVolume is available and StorageClass provisioner is working.")
 
 	case "permission_error":
 		parts = append(parts, "Container hit a permission/auth error.")
@@ -878,9 +907,25 @@ func isErrorLine(line string) bool {
 	return false
 }
 
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
 func lastN(s []string, n int) []string {
 	if len(s) <= n {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// reEventPodRef matches " <container> in pod <podname>_<namespace>(<uid>..." in event messages.
+var reEventPodRef = regexp.MustCompile(` in pod \S+`)
+
+// cleanEventMessage strips verbose pod/namespace/UID references from K8s event messages.
+func cleanEventMessage(msg string) string {
+	msg = reEventPodRef.ReplaceAllString(msg, "")
+	return strings.TrimSpace(msg)
 }

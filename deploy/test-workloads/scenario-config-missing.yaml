@@ -10,7 +10,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-config-missing
-  namespace: demo
+  namespace: demo-staging
   labels:
     app: api-config-missing
 spec:

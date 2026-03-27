@@ -42,31 +42,32 @@ deploy: docker-load
 
 # Test scenarios
 scenarios:
-	@kubectl create namespace demo --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl apply -f deploy/test-workloads/namespaces.yaml
 	@kubectl apply -f deploy/test-workloads/
 	@echo ""
 	@echo "All scenarios deployed. Wait ~30s then check:"
 	@echo "  make scenarios-status"
 
 scenarios-status:
-	@echo "=== Pod Status ==="
-	@kubectl get pods -n demo -o wide
+	@echo "=== demo-prod ==="
+	@kubectl get pods -n demo-prod 2>/dev/null || true
+	@echo ""
+	@echo "=== demo-staging ==="
+	@kubectl get pods -n demo-staging 2>/dev/null || true
+	@echo ""
+	@echo "=== demo-infra ==="
+	@kubectl get pods -n demo-infra 2>/dev/null || true
 	@echo ""
 	@echo "=== Expected ==="
-	@echo "  checkout           CrashLoopBackOff  (OOMKilled)"
-	@echo "  worker             Pending           (insufficient resources)"
-	@echo "  payment            Running           (healthy)"
-	@echo "  api-config-missing CrashLoopBackOff  (missing env)"
-	@echo "  api-probe-fail     Running+restarts  (liveness probe fail)"
-	@echo "  api-bad-image      ErrImagePull      (bad image tag)"
-	@echo "  api-dependency-fail CrashLoopBackOff (connection refused)"
-	@echo "  ml-worker-taint    Pending           (nodeSelector mismatch)"
-	@echo "  db-pvc-pending     Pending           (PVC not bound)"
+	@echo "  demo-prod:    checkout=CrashLoop  worker=Pending  payment=Running"
+	@echo "  demo-staging: api-config-missing=CrashLoop  api-dependency-fail=CrashLoop"
+	@echo "  demo-infra:   api-bad-image=ImagePull  api-probe-fail=CrashLoop  ml-worker-taint=Pending  db-pvc-pending=Pending"
 
 demo-alerts:
-	@./deploy/test-workloads/demo-webhooks.sh
+	@./deploy/test-workloads/demo-webhooks.sh $(NUM)
 
 scenarios-clean:
 	@kubectl delete -f deploy/test-workloads/ --ignore-not-found
-	@kubectl delete pvc data-pvc-test -n demo --ignore-not-found
+	@kubectl delete pvc data-pvc-test -n demo-infra --ignore-not-found
+	@kubectl delete ns demo-prod demo-staging demo-infra --ignore-not-found
 	@echo "All scenarios removed."

@@ -10,7 +10,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-bad-image
-  namespace: demo
+  namespace: demo-infra
   labels:
     app: api-bad-image
 spec:

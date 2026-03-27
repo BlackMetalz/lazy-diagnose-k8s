@@ -152,6 +152,9 @@ func formatResultBody(result *domain.DiagnosisResult) string {
 	// ── Summary (the most important part) ──
 	b.WriteString(fmt.Sprintf("%s\n\n", esc(result.Summary)))
 
+	// ── Target info (where to fix) ──
+	b.WriteString(formatTargetInfo(result))
+
 	// ── Key facts (compact) ──
 	if result.PrimaryHypothesis != nil {
 		h := result.PrimaryHypothesis
@@ -174,20 +177,13 @@ func formatResultBody(result *domain.DiagnosisResult) string {
 	}
 	b.WriteString("\n")
 
-	// ── Evidence (compact, max 6 lines) ──
+	// ── Evidence (pre-formatted block) ──
 	if len(result.SupportingEvidence) > 0 {
-		b.WriteString("<b>Evidence:</b>\n")
-		limit := len(result.SupportingEvidence)
-		if limit > 6 {
-			limit = 6
+		b.WriteString("<b>Evidence:</b>\n<pre>")
+		for _, e := range result.SupportingEvidence {
+			b.WriteString(esc(e) + "\n")
 		}
-		for _, e := range result.SupportingEvidence[:limit] {
-			b.WriteString(fmt.Sprintf("  <code>%s</code>\n", esc(truncate(e, 80))))
-		}
-		if len(result.SupportingEvidence) > 6 {
-			b.WriteString(fmt.Sprintf("  <i>... +%d more</i>\n", len(result.SupportingEvidence)-6))
-		}
-		b.WriteString("\n")
+		b.WriteString("</pre>\n")
 	}
 
 	// ── Next steps ──
@@ -216,7 +212,7 @@ func formatResultBody(result *domain.DiagnosisResult) string {
 	}
 
 	// ── Footer ──
-	b.WriteString(fmt.Sprintf("\n<i>%s · %s</i>", result.Duration.Round(time.Millisecond), result.Confidence))
+	b.WriteString(fmt.Sprintf("\n<i>Confidence: %s · Analyzed in %s</i>", result.Confidence, result.Duration.Round(time.Millisecond)))
 
 	return b.String()
 }
@@ -301,6 +297,55 @@ func reasonIcon(reason string) string {
 	default:
 		return "⚪"
 	}
+}
+
+// formatTargetInfo shows where to fix — namespace, deployment, container, image, resources.
+func formatTargetInfo(result *domain.DiagnosisResult) string {
+	if result.Target == nil {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("<b>Target:</b>\n")
+	b.WriteString(fmt.Sprintf("  Namespace:  <code>%s</code>\n", esc(result.Target.Namespace)))
+	if result.Target.Kind != "" {
+		b.WriteString(fmt.Sprintf("  %s: <code>%s</code>\n", esc(capitalize(result.Target.Kind)), esc(result.Target.ResourceName)))
+	}
+
+	// Extract container + image + resources from evidence bundle (stored in SupportingEvidence)
+	for _, e := range result.SupportingEvidence {
+		// Container line: "Container checkout [polinux/stress]: state=..."
+		if strings.HasPrefix(e, "  Container ") {
+			// Extract container name and image
+			if idx := strings.Index(e, "["); idx > 0 {
+				if end := strings.Index(e[idx:], "]"); end > 0 {
+					image := e[idx+1 : idx+end]
+					container := strings.TrimSpace(e[len("  Container "):idx])
+					b.WriteString(fmt.Sprintf("  Container: <code>%s</code>\n", esc(container)))
+					b.WriteString(fmt.Sprintf("  Image:     <code>%s</code>\n", esc(image)))
+				}
+			}
+			break
+		}
+	}
+
+	// Resources line from evidence
+	for _, e := range result.SupportingEvidence {
+		if strings.HasPrefix(e, "  Resources:") || strings.HasPrefix(e, "Resources:") {
+			b.WriteString(fmt.Sprintf("  %s\n", esc(strings.TrimSpace(e))))
+			break
+		}
+	}
+
+	b.WriteString("\n")
+	return b.String()
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func confidenceBadge(c domain.Confidence) string {

@@ -10,7 +10,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ml-worker-taint
-  namespace: demo
+  namespace: demo-infra
   labels:
     app: ml-worker-taint
 spec:

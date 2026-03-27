@@ -11,7 +11,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-probe-fail
-  namespace: demo
+  namespace: demo-infra
   labels:
     app: api-probe-fail
 spec:
