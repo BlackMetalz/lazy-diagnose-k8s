@@ -282,7 +282,7 @@ func analyzeEvents(bundle *domain.EvidenceBundle) finding {
 		}
 		if strings.Contains(msg, "readiness probe failed") {
 			return finding{
-				ID: "probe_issue", Name: "Readiness probe failure",
+				ID: "readiness_probe_fail", Name: "Readiness probe failure",
 				Score: 40, MaxScore: 100,
 				Signals: []string{"event_readiness_probe_failed"},
 				Detail:  ev.Message,
@@ -743,9 +743,14 @@ func generateSummary(result *domain.DiagnosisResult, bundle *domain.EvidenceBund
 		parts = append(parts, "Check registry hostname and network/DNS connectivity.")
 
 	case "probe_issue":
-		parts = append(parts, "Container killed by probe failure.")
-		parts = addEventDetail(parts, bundle, "liveness probe failed", "readiness probe failed")
+		parts = append(parts, "Container killed by liveness probe failure.")
+		parts = addEventDetail(parts, bundle, "liveness probe failed")
 		parts = append(parts, "Check probe config — initialDelaySeconds may be too short.")
+
+	case "readiness_probe_fail":
+		parts = append(parts, "Pod Running but not Ready — readiness probe failing. Service won't route traffic.")
+		parts = addEventDetail(parts, bundle, "readiness probe failed")
+		parts = append(parts, "Check if app is actually healthy on the probe endpoint.")
 
 	case "insufficient_resources":
 		parts = append(parts, "Pod can't be scheduled — insufficient cluster resources.")

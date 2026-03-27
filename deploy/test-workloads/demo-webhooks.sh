@@ -26,6 +26,7 @@ ALERTS=(
   "9|KubeDeploymentReplicasMismatch|warning|demo-prod|payment|payment-bad-revision-xxx|payment|Deployment payment has mismatched replicas after rollout."
   "10|KubePodCrashLooping|critical|demo-staging|api-runtime-crash|api-runtime-crash-6f8b9c7d4-x2k9p|api|Container api crashed after running for 30s. Runtime panic."
   "11|KubePodCrashLooping|warning|demo-staging|api-init-fail|api-init-fail-7c4d8e9f5-m3n7q|db-migrate|Init container db-migrate failed. Main container not started."
+  "12|KubePodNotReady|warning|demo-infra|api-not-ready|api-not-ready-5b8c9d7e3-k4p2r|api|Pod Running but not Ready. Readiness probe failing — no traffic routed."
 )
 
 show_menu() {
@@ -119,7 +120,7 @@ case "$CHOICE" in
     echo ""
     echo "Done. Check Telegram."
     ;;
-  [1-9]|1[0-1])
+  [1-9]|1[0-2])
     IDX=$((CHOICE - 1))
     if [ $IDX -lt ${#ALERTS[@]} ]; then
       echo "Sending alert #$CHOICE..."

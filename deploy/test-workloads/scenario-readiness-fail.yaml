@@ -1,0 +1,55 @@
+# Scenario: Readiness probe failure (silent failure)
+#
+# App starts successfully and stays running, but readiness probe fails.
+# Pod is Running with 0 restarts but NOT Ready — Service won't route traffic.
+# This is a "silent failure": everything looks OK but users can't reach the app.
+#
+# Expected state: Running, 0/1 Ready, 0 restarts
+# Hypothesis: readiness_probe_fail
+# Bot command: /check api-not-ready
+#
+# What the bot should detect:
+#   - Pod Running but Ready=False
+#   - No restarts, no crash
+#   - Events: "Readiness probe failed"
+#   - Container is healthy but not serving traffic
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-not-ready
+  namespace: demo-infra
+  labels:
+    app: api-not-ready
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-not-ready
+  template:
+    metadata:
+      labels:
+        app: api-not-ready
+    spec:
+      containers:
+        - name: api
+          image: busybox:1.37
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[INFO] Starting api-server v2.1.0..."
+              echo "[INFO] Listening on :8080"
+              echo "[WARN] Cache warmup failed — /ready will return 503"
+              sleep 3600
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "16Mi"
+            limits:
+              memory: "32Mi"

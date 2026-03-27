@@ -153,9 +153,15 @@ func recommendSteps(intent domain.Intent, result *domain.DiagnosisResult) []stri
 		}
 	case "probe_issue":
 		return []string{
-			"Review liveness/readiness probe config",
+			"Review liveness probe config",
 			"Increase initialDelaySeconds if app starts slowly",
 			"Verify probe endpoint is responding",
+		}
+	case "readiness_probe_fail":
+		return []string{
+			"Check why readiness endpoint returns non-200",
+			"Verify app dependencies are reachable (cache, DB, etc.)",
+			"Review readinessProbe config and endpoint",
 		}
 	case "bad_image", "bad_image_tag":
 		return []string{

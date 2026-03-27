@@ -229,6 +229,7 @@ Additional scenarios (deployed via `make scenarios`):
 | `api-init-fail` | Init:CrashLoopBackOff | Init container migration fail |
 | `api-bad-image` | ErrImagePull | Image not found |
 | `api-probe-fail` | Running + restarts | Liveness probe fail |
+| `api-not-ready` | Running (0/1 Ready) | Readiness probe fail — silent failure |
 | `ml-worker-taint` | Pending | Node selector mismatch |
 | `db-pvc-pending` | Pending | PVC not bound |
 

@@ -8,7 +8,7 @@ Pre-built K8s failure scenarios for testing the diagnosis bot. Distributed acros
 |---|---|---|
 | `demo-prod` | Core app simulation | checkout (OOM), worker (Pending), payment (healthy) |
 | `demo-staging` | Config / dependency / runtime | api-config-missing, api-dependency-fail, api-runtime-crash, api-init-fail |
-| `demo-infra` | Image / probe / scheduling | api-bad-image, api-probe-fail, ml-worker-taint, db-pvc-pending |
+| `demo-infra` | Image / probe / scheduling | api-bad-image, api-probe-fail, api-not-ready, ml-worker-taint, db-pvc-pending |
 
 ## Quick Reference
 
@@ -23,6 +23,7 @@ Pre-built K8s failure scenarios for testing the diagnosis bot. Distributed acros
 | Init container fail | demo-staging | Init:CrashLoopBackOff | init_container_fail | `/check api-init-fail` |
 | Bad image tag | demo-infra | ErrImagePull | bad_image_tag | `/check api-bad-image` |
 | Liveness probe fail | demo-infra | Running + restarts | probe_issue | `/check api-probe-fail` |
+| Readiness probe fail | demo-infra | Running (0/1 Ready) | readiness_probe_fail | `/check api-not-ready` |
 | Node selector mismatch | demo-infra | Pending | affinity_issue | `/check ml-worker-taint` |
 | PVC not bound | demo-infra | Pending | pvc_binding | `/check db-pvc-pending` |
 | Rollout regression | demo-prod | ImagePullBackOff | release_regression | `/deploy payment` |
@@ -142,6 +143,16 @@ Init container runs a database migration that fails. Main container never starts
 - Main container never started
 - Init container logs: `"migration failed"`, `"dirty database state"`
 - `exitCode: 1`
+
+### Readiness Probe Fail (scenario-readiness-fail.yaml)
+
+App starts and stays running, but readiness probe fails. Pod is Running with 0 restarts but NOT Ready — Service won't route traffic. A "silent failure" where everything looks OK but users can't reach the app.
+
+**What the bot should detect:**
+- Pod Running but `Ready=False`
+- No restarts, no crash
+- Events: `"Readiness probe failed"`
+- Logs: `"Cache warmup failed — /ready will return 503"`
 
 ### Rollout Regression (rollout-regression.yaml)
 

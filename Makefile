@@ -61,7 +61,7 @@ scenarios-status:
 	@echo "=== Expected ==="
 	@echo "  demo-prod:    checkout=CrashLoop  worker=Pending  payment=Running"
 	@echo "  demo-staging: api-config-missing=CrashLoop  api-dependency-fail=CrashLoop  api-runtime-crash=CrashLoop  api-init-fail=Init:CrashLoop"
-	@echo "  demo-infra:   api-bad-image=ImagePull  api-probe-fail=CrashLoop  ml-worker-taint=Pending  db-pvc-pending=Pending"
+	@echo "  demo-infra:   api-bad-image=ImagePull  api-probe-fail=CrashLoop  ml-worker-taint=Pending  db-pvc-pending=Pending  api-not-ready=Running(0/1)"
 
 demo-alerts:
 	@./deploy/test-workloads/demo-webhooks.sh $(NUM)
