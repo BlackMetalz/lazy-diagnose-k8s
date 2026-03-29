@@ -35,7 +35,7 @@ func NewInCluster() (*Provider, error) {
 	return &Provider{client: client}, nil
 }
 
-// NewFromKubeconfig creates a provider using a kubeconfig file.
+// NewFromKubeconfig creates a provider using a kubeconfig file (current context).
 func NewFromKubeconfig(kubeconfigPath string) (*Provider, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
@@ -44,6 +44,22 @@ func NewFromKubeconfig(kubeconfigPath string) (*Provider, error) {
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("create k8s client: %w", err)
+	}
+	return &Provider{client: client}, nil
+}
+
+// NewFromContext creates a provider using a specific kubeconfig context.
+func NewFromContext(kubeconfigPath, contextName string) (*Provider, error) {
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath},
+		&clientcmd.ConfigOverrides{CurrentContext: contextName},
+	).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("build kubeconfig context %s: %w", contextName, err)
+	}
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("create k8s client for context %s: %w", contextName, err)
 	}
 	return &Provider{client: client}, nil
 }

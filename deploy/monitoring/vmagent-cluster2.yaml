@@ -41,7 +41,7 @@ data:
     global:
       scrape_interval: 15s
       external_labels:
-        cluster: lazy-diag
+        cluster: lazy-diag-2
 
     scrape_configs:
       # Scrape kube-state-metrics

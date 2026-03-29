@@ -13,6 +13,7 @@ type ParsedMessage struct {
 	Command   string // "diag", "pod", "deploy", "check", "scan", or empty for free text
 	Target    string // the target resource or service name
 	Namespace string // optional namespace override (-n flag)
+	Cluster   string // optional cluster override (-c flag)
 	RawText   string
 }
 
@@ -44,21 +45,20 @@ func ParseMessage(text string) ParsedMessage {
 
 		switch cmd {
 		case "scan":
-			ns := ""
-			if len(parts) > 1 {
-				ns = parts[1]
-			}
+			ns, cluster := extractScanFlags(parts[1:])
 			return ParsedMessage{
 				Command:   "scan",
 				Namespace: ns,
+				Cluster:   cluster,
 				RawText:   text,
 			}
 		case "diag", "check", "pod", "deploy":
-			target, ns := extractTargetAndNamespace(parts[1:])
+			target, ns, cluster := extractTargetAndFlags(parts[1:])
 			return ParsedMessage{
 				Command:   cmd,
 				Target:    target,
 				Namespace: ns,
+				Cluster:   cluster,
 				RawText:   text,
 			}
 		case "start", "help":
@@ -88,19 +88,39 @@ func ParseMessage(text string) ParsedMessage {
 	}
 }
 
-// extractTargetAndNamespace parses [target] [-n namespace] from args.
-func extractTargetAndNamespace(args []string) (target, namespace string) {
+// extractTargetAndFlags parses [target] [-n namespace] [-c cluster] from args.
+func extractTargetAndFlags(args []string) (target, namespace, cluster string) {
 	for i := 0; i < len(args); i++ {
 		if (args[i] == "-n" || args[i] == "--namespace") && i+1 < len(args) {
 			namespace = args[i+1]
-			i++ // skip next
+			i++
+			continue
+		}
+		if (args[i] == "-c" || args[i] == "--cluster") && i+1 < len(args) {
+			cluster = args[i+1]
+			i++
 			continue
 		}
 		if target == "" {
 			target = args[i]
 		}
 	}
-	return target, namespace
+	return target, namespace, cluster
+}
+
+// extractScanFlags parses [namespace] [-c cluster] from scan args.
+func extractScanFlags(args []string) (namespace, cluster string) {
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "-c" || args[i] == "--cluster") && i+1 < len(args) {
+			cluster = args[i+1]
+			i++
+			continue
+		}
+		if namespace == "" {
+			namespace = args[i]
+		}
+	}
+	return namespace, cluster
 }
 
 func isNoiseWord(w string) bool {
@@ -373,11 +393,11 @@ func FormatHelpMessage() string {
 Kubernetes diagnosis via Telegram. Collects data from K8s, metrics, and logs — returns diagnosis + suggested commands.
 
 <b>Commands:</b>
-/scan [namespace] — Find all unhealthy pods
-/check &lt;target&gt; [-n ns] — General health check
+/scan [namespace] [-c cluster] — Find all unhealthy pods
+/check &lt;target&gt; [-n ns] [-c cluster] — General health check
 /diag &lt;target&gt; &lt;context&gt; — Diagnosis with description
-/pod &lt;pod-name&gt; — Check a specific pod
-/deploy &lt;deployment&gt; — Check rollout status
+/pod &lt;pod-name&gt; [-c cluster] — Check a specific pod
+/deploy &lt;deployment&gt; [-c cluster] — Check rollout status
 /help — This message
 
 <b>Examples:</b>
@@ -385,6 +405,7 @@ Kubernetes diagnosis via Telegram. Collects data from K8s, metrics, and logs —
 • <code>/scan prod</code> — scan specific namespace
 • <code>/check checkout</code>
 • <code>/check checkout -n staging</code>
+• <code>/check checkout -c lazy-diag-2</code>
 • <code>/diag payment just deployed, seeing 5xx</code>
 • <code>/deploy checkout</code>
 

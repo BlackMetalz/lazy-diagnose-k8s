@@ -14,6 +14,7 @@ const (
 
 // Target represents a resolved Kubernetes resource target.
 type Target struct {
+	Cluster          string `json:"cluster,omitempty"` // cluster name for multi-cluster support
 	Name             string `json:"name"`
 	Namespace        string `json:"namespace"`
 	Kind             string `json:"kind"` // deployment, statefulset, daemonset, pod
@@ -23,9 +24,13 @@ type Target struct {
 	RolloutTarget    string `json:"rollout_target,omitempty"`
 }
 
-// FullName returns namespace/kind/name for display.
+// FullName returns namespace/kind/name for display, prefixed with cluster if set.
 func (t Target) FullName() string {
-	return t.Namespace + "/" + t.Kind + "/" + t.ResourceName
+	base := t.Namespace + "/" + t.Kind + "/" + t.ResourceName
+	if t.Cluster != "" {
+		return t.Cluster + "/" + base
+	}
+	return base
 }
 
 // DiagnosisRequest represents a single diagnosis request from user.

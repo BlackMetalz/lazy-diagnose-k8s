@@ -32,11 +32,17 @@ func (b *Bot) sendAlertNotification(chatID int64, alertTarget webhook.AlertTarge
 		resource = alertTarget.Name
 	}
 
+	// Determine cluster from alert labels or use default
+	clusterName := alertTarget.Cluster
+	if clusterName == "" {
+		clusterName = b.defaultCluster
+	}
+
 	// Format alert message
 	msg := webhook.FormatAlertMessage(alertTarget, alertCount, b.alertFormat)
 
 	// Build action buttons
-	keyboard := buildAlertKeyboard(ns, resource)
+	keyboard := buildAlertKeyboard(clusterName, ns, resource)
 
 	b.sendMessageWithKeyboard(chatID, msg, keyboard)
 
@@ -48,10 +54,11 @@ func (b *Bot) sendAlertNotification(chatID int64, alertTarget webhook.AlertTarge
 }
 
 // buildAlertKeyboard creates the 3-action button row for alerts.
-func buildAlertKeyboard(ns, resource string) tgbotapi.InlineKeyboardMarkup {
-	aiData := fmt.Sprintf("ai:%s:%s", ns, resource)
-	staticData := fmt.Sprintf("static:%s:%s", ns, resource)
-	logsData := fmt.Sprintf("logs:%s:%s", ns, resource)
+// Callback data format: "action:cluster:ns:name"
+func buildAlertKeyboard(cluster, ns, resource string) tgbotapi.InlineKeyboardMarkup {
+	aiData := fmt.Sprintf("ai:%s:%s:%s", cluster, ns, resource)
+	staticData := fmt.Sprintf("static:%s:%s:%s", cluster, ns, resource)
+	logsData := fmt.Sprintf("logs:%s:%s:%s", cluster, ns, resource)
 
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -64,9 +71,9 @@ func buildAlertKeyboard(ns, resource string) tgbotapi.InlineKeyboardMarkup {
 
 // buildPostDiagnosisKeyboard creates buttons shown after a diagnosis result.
 // Only AI + Logs — Static already ran, Scan NS is separate concern.
-func buildPostDiagnosisKeyboard(ns, resource string) tgbotapi.InlineKeyboardMarkup {
-	aiData := fmt.Sprintf("ai:%s:%s", ns, resource)
-	logsData := fmt.Sprintf("logs:%s:%s", ns, resource)
+func buildPostDiagnosisKeyboard(cluster, ns, resource string) tgbotapi.InlineKeyboardMarkup {
+	aiData := fmt.Sprintf("ai:%s:%s:%s", cluster, ns, resource)
+	logsData := fmt.Sprintf("logs:%s:%s:%s", cluster, ns, resource)
 
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(

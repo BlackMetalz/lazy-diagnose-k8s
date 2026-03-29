@@ -58,30 +58,7 @@ func main() {
 	// Build components
 	targetResolver := resolver.New()
 
-	// Build providers
-	collector := &provider.Collector{}
-
-	// K8s provider
-	k8s, err := initK8sProvider(logger)
-	if err != nil {
-		logger.Warn("K8s provider unavailable, diagnosis will lack K8s data", "error", err)
-	} else {
-		collector.K8s = k8s
-		logger.Info("K8s provider initialized")
-	}
-
-	// Metrics provider (VictoriaMetrics)
-	// Config file → env var override → default
-	vmURL := firstNonEmpty(os.Getenv("VICTORIA_METRICS_URL"), cfg.Providers.VictoriaMetricsURL, "http://localhost:8428")
-	collector.Metrics = metricsprovider.New(vmURL)
-	logger.Info("metrics provider initialized", "url", vmURL)
-
-	// Logs provider (VictoriaLogs)
-	vlURL := firstNonEmpty(os.Getenv("VICTORIA_LOGS_URL"), cfg.Providers.VictoriaLogsURL, "http://localhost:9428")
-	collector.Logs = logsprovider.New(vlURL)
-	logger.Info("logs provider initialized", "url", vlURL)
-
-	// LLM Summarizer (optional — for AI Investigation button)
+	// LLM Summarizer (optional — shared across clusters)
 	var summarizer *diagnosis.Summarizer
 	llmCfg := resolveLLMConfig(cfg)
 	if llmCfg.Backend != "" {
@@ -96,15 +73,97 @@ func main() {
 		logger.Info("LLM summarizer disabled (configure llm section in config.yaml or set LLM_BACKEND env var)")
 	}
 
-	playbookEngine := playbook.New(collector, summarizer, logger)
+	// Victoria endpoints (shared across clusters)
+	vmURL := firstNonEmpty(os.Getenv("VICTORIA_METRICS_URL"), cfg.Providers.VictoriaMetricsURL, "http://localhost:8428")
+	vlURL := firstNonEmpty(os.Getenv("VICTORIA_LOGS_URL"), cfg.Providers.VictoriaLogsURL, "http://localhost:9428")
 
-	// Create Telegram bot
 	defaultNs := envOr("DEFAULT_NAMESPACE", "prod")
+
+	// Build per-cluster components
+	clusters := make(map[string]*telegram.ClusterEntry)
+	var defaultCluster string
+	var firstK8s *k8sprovider.Provider // for single-cluster backwards compat
+
+	if len(cfg.Clusters) > 0 {
+		// Multi-cluster mode: build from config
+		kubeconfigDefault := envOr("KUBECONFIG", filepath.Join(homeDir(), ".kube", "config"))
+
+		for _, cc := range cfg.Clusters {
+			kubeconfigPath := cc.Kubeconfig
+			if kubeconfigPath == "" {
+				kubeconfigPath = kubeconfigDefault
+			}
+
+			k8s, err := k8sprovider.NewFromContext(kubeconfigPath, cc.Context)
+			if err != nil {
+				logger.Warn("K8s provider unavailable for cluster", "cluster", cc.Name, "context", cc.Context, "error", err)
+				continue
+			}
+
+			collector := &provider.Collector{
+				K8s:     k8s,
+				Metrics: metricsprovider.NewWithCluster(vmURL, cc.Name),
+				Logs:    logsprovider.NewWithCluster(vlURL, cc.Name),
+			}
+
+			engine := playbook.New(collector, summarizer, logger)
+			clusters[cc.Name] = &telegram.ClusterEntry{
+				Name:    cc.Name,
+				Engine:  engine,
+				Scanner: k8s,
+			}
+
+			if cc.Default {
+				defaultCluster = cc.Name
+			}
+			if firstK8s == nil {
+				firstK8s = k8s
+			}
+
+			logger.Info("cluster initialized", "name", cc.Name, "context", cc.Context)
+		}
+
+		if defaultCluster == "" && len(clusters) > 0 {
+			// Pick first cluster as default
+			for name := range clusters {
+				defaultCluster = name
+				break
+			}
+		}
+	}
+
+	// Fallback: single-cluster mode (no clusters in config)
+	if len(clusters) == 0 {
+		k8s, err := initK8sProvider(logger)
+		if err != nil {
+			logger.Warn("K8s provider unavailable, diagnosis will lack K8s data", "error", err)
+		} else {
+			logger.Info("K8s provider initialized (single-cluster mode)")
+			firstK8s = k8s
+		}
+
+		collector := &provider.Collector{
+			K8s:     firstK8s,
+			Metrics: metricsprovider.New(vmURL),
+			Logs:    logsprovider.New(vlURL),
+		}
+
+		engine := playbook.New(collector, summarizer, logger)
+		clusters["default"] = &telegram.ClusterEntry{
+			Name:    "default",
+			Engine:  engine,
+			Scanner: firstK8s,
+		}
+		defaultCluster = "default"
+	}
+
+	// Create Telegram bot (single-cluster compat via first cluster)
+	firstEntry := clusters[defaultCluster]
 	bot, err := telegram.NewBot(
 		cfg.Telegram.Token,
-		playbookEngine,
+		firstEntry.Engine,
 		targetResolver,
-		k8s, // scanner (can be nil if K8s unavailable)
+		firstEntry.Scanner,
 		defaultNs,
 		cfg.Telegram.AllowedChatIDs,
 		cfg.Telegram.AlertChatIDs,
@@ -118,6 +177,10 @@ func main() {
 		logger.Error("failed to create bot", "error", err)
 		os.Exit(1)
 	}
+
+	// Register all clusters (overrides the single "default" entry from NewBot)
+	bot.SetClusters(clusters, defaultCluster)
+	logger.Info("bot configured", "clusters", len(clusters), "default", defaultCluster)
 
 	// Graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

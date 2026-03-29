@@ -16,12 +16,19 @@ import (
 	"github.com/lazy-diagnose-k8s/internal/webhook"
 )
 
+// ClusterEntry holds per-cluster components.
+type ClusterEntry struct {
+	Name    string
+	Engine  *playbook.Engine
+	Scanner *k8sprovider.Provider
+}
+
 // Bot is the Telegram bot that handles diagnosis requests.
 type Bot struct {
 	api              *tgbotapi.BotAPI
-	engine           *playbook.Engine
+	clusters         map[string]*ClusterEntry // keyed by cluster name
+	defaultCluster   string                   // default cluster name
 	resolver         *resolver.Resolver
-	scanner          *k8sprovider.Provider
 	defaultNamespace string
 	alertFormat      webhook.AlertFormatConfig
 	logger           *slog.Logger
@@ -31,6 +38,7 @@ type Bot struct {
 }
 
 // NewBot creates a new Telegram bot.
+// For single-cluster backwards compatibility, pass engine/scanner and leave clusters nil.
 func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, alertChatIDs []int64, alertFmt webhook.AlertFormatConfig, logger *slog.Logger) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
@@ -48,17 +56,57 @@ func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, 
 		defaultNs = "prod"
 	}
 
+	// Single-cluster backwards compatibility: wrap into clusters map
+	clusters := map[string]*ClusterEntry{
+		"default": {Name: "default", Engine: engine, Scanner: scanner},
+	}
+
 	return &Bot{
 		api:              api,
-		engine:           engine,
+		clusters:         clusters,
+		defaultCluster:   "default",
 		resolver:         resolver,
-		scanner:          scanner,
 		defaultNamespace: defaultNs,
 		alertFormat:      alertFmt,
 		logger:           logger,
 		allowedChatIDs:   allowed,
 		alertChatIDs:     alertChatIDs,
 	}, nil
+}
+
+// AddCluster registers a cluster with its engine and scanner.
+func (b *Bot) AddCluster(name string, engine *playbook.Engine, scanner *k8sprovider.Provider, isDefault bool) {
+	b.clusters[name] = &ClusterEntry{Name: name, Engine: engine, Scanner: scanner}
+	if isDefault {
+		b.defaultCluster = name
+	}
+}
+
+// SetClusters replaces the cluster map entirely.
+func (b *Bot) SetClusters(clusters map[string]*ClusterEntry, defaultCluster string) {
+	b.clusters = clusters
+	b.defaultCluster = defaultCluster
+}
+
+// getCluster returns the cluster entry by name, falling back to default.
+func (b *Bot) getCluster(name string) *ClusterEntry {
+	if name != "" {
+		if c, ok := b.clusters[name]; ok {
+			return c
+		}
+		b.logger.Warn("unknown cluster, using default", "requested", name, "default", b.defaultCluster)
+	}
+	return b.clusters[b.defaultCluster]
+}
+
+// engine returns the playbook engine for the given cluster (or default).
+func (b *Bot) engine(clusterName string) *playbook.Engine {
+	return b.getCluster(clusterName).Engine
+}
+
+// scanner returns the K8s scanner for the given cluster (or default).
+func (b *Bot) scannerFor(clusterName string) *k8sprovider.Provider {
+	return b.getCluster(clusterName).Scanner
 }
 
 // Run starts the bot and blocks until context is cancelled.
@@ -121,12 +169,16 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
+	// Resolve cluster
+	clusterName := parsed.Cluster
+	cluster := b.getCluster(clusterName)
+
 	// Resolve namespace: flag > fuzzy search > default
 	ns := parsed.Namespace
 
 	// If no namespace specified, try fuzzy search to find the right namespace + pod
-	if ns == "" && b.scanner != nil {
-		matches, err := b.scanner.FuzzyFindPod(ctx, parsed.Target, "") // search all namespaces
+	if ns == "" && cluster.Scanner != nil {
+		matches, err := cluster.Scanner.FuzzyFindPod(ctx, parsed.Target, "") // search all namespaces
 		if err == nil && len(matches) > 0 {
 			if matches[0].Score >= 60 {
 				ns = matches[0].Namespace
@@ -153,6 +205,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		b.sendMessage(chatID, FormatError(err))
 		return
 	}
+	target.Cluster = cluster.Name
 
 	// Classify intent
 	intent := domain.ClassifyIntent(parsed.RawText)
@@ -189,11 +242,11 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	}
 
 	// Run diagnosis (static analysis by default for /check)
-	result := b.engine.RunWithoutLLM(ctx, req, progress)
+	result := cluster.Engine.RunWithoutLLM(ctx, req, progress)
 
 	// Send final result with action buttons
 	formatted := FormatResult(result)
-	keyboard := buildPostDiagnosisKeyboard(ns, target.ResourceName)
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, target.ResourceName)
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, formatted, keyboard)
 	} else {
@@ -204,8 +257,9 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 func (b *Bot) handleScan(ctx context.Context, chatID int64, parsed ParsedMessage) {
 	ns := parsed.Namespace
 
-	if b.scanner == nil {
-		b.sendMessage(chatID, FormatError(fmt.Errorf("K8s provider not available, cannot scan")))
+	cluster := b.getCluster(parsed.Cluster)
+	if cluster.Scanner == nil {
+		b.sendMessage(chatID, FormatError(fmt.Errorf("K8s provider not available for cluster %s, cannot scan", cluster.Name)))
 		return
 	}
 
@@ -214,6 +268,9 @@ func (b *Bot) handleScan(ctx context.Context, chatID int64, parsed ParsedMessage
 	if scanAll {
 		label = "all namespaces"
 	}
+	if cluster.Name != b.defaultCluster {
+		label = fmt.Sprintf("%s [%s]", label, cluster.Name)
+	}
 
 	progressMsg := b.sendMessage(chatID, fmt.Sprintf("🔍 Scanning <b>%s</b>...", esc(label)))
 	start := time.Now()
@@ -221,10 +278,10 @@ func (b *Bot) handleScan(ctx context.Context, chatID int64, parsed ParsedMessage
 	var unhealthy []k8sprovider.UnhealthyPod
 	var err error
 	if scanAll {
-		unhealthy, err = b.scanner.ScanAllNamespaces(ctx)
+		unhealthy, err = cluster.Scanner.ScanAllNamespaces(ctx)
 		ns = "all"
 	} else {
-		unhealthy, err = b.scanner.ScanNamespace(ctx, ns)
+		unhealthy, err = cluster.Scanner.ScanNamespace(ctx, ns)
 	}
 	if err != nil {
 		b.sendMessage(chatID, FormatError(fmt.Errorf("scan %s: %w", label, err)))

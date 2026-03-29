@@ -16,6 +16,15 @@ providers:
   victoria_metrics_url: "http://localhost:8428"
   victoria_logs_url: "http://localhost:9428"
 
+# Multi-cluster support (optional — omit for single-cluster mode)
+# Each cluster needs a kubeconfig context. Metrics/logs are filtered by cluster label.
+# clusters:
+#   - name: lazy-diag
+#     context: kind-lazy-diag
+#     default: true
+#   - name: lazy-diag-2
+#     context: kind-lazy-diag-2
+
 # LLM summarizer (optional — bot works without it)
 # Env vars (LLM_BACKEND, LLM_API_KEY, etc.) override these values.
 llm:

@@ -18,6 +18,7 @@ import (
 // Provider collects logs from VictoriaLogs via LogsQL HTTP API.
 type Provider struct {
 	baseURL    string
+	cluster    string // cluster label filter for multi-cluster setups
 	httpClient *http.Client
 }
 
@@ -25,6 +26,17 @@ type Provider struct {
 func New(baseURL string) *Provider {
 	return &Provider{
 		baseURL: baseURL,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// NewWithCluster creates a logs provider that filters by cluster label.
+func NewWithCluster(baseURL, cluster string) *Provider {
+	return &Provider{
+		baseURL: baseURL,
+		cluster: cluster,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -44,6 +56,10 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target, time
 		`kubernetes.pod_namespace:%s AND kubernetes.pod_name:%s*`,
 		target.Namespace, target.ResourceName,
 	)
+	// Filter by cluster label in multi-cluster setups
+	if p.cluster != "" {
+		query = fmt.Sprintf(`cluster:%s AND %s`, p.cluster, query)
+	}
 
 	// Get recent logs
 	recentLines, err := p.queryLogs(ctx, query, timeRange, 200)

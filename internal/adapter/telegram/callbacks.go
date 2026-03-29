@@ -10,6 +10,25 @@ import (
 	"github.com/lazy-diagnose-k8s/internal/domain"
 )
 
+// Callback data format: "action:cluster:ns:name"
+// For backwards compatibility, if only 3 parts → treat as "action:ns:name" with default cluster.
+
+// parseCallbackData extracts action, cluster, namespace, and name from callback data.
+func parseCallbackData(data string) (action, cluster, ns, name string) {
+	parts := strings.SplitN(data, ":", 4)
+	switch len(parts) {
+	case 4:
+		return parts[0], parts[1], parts[2], parts[3]
+	case 3:
+		// backwards compat: action:ns:name (no cluster)
+		return parts[0], "", parts[1], parts[2]
+	case 2:
+		return parts[0], "", parts[1], ""
+	default:
+		return data, "", "", ""
+	}
+}
+
 // handleCallback processes inline keyboard button presses.
 func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	chatID := cb.Message.Chat.ID
@@ -21,12 +40,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	// Acknowledge the callback immediately
 	b.api.Send(tgbotapi.NewCallback(cb.ID, ""))
 
-	parts := strings.SplitN(data, ":", 3)
-	if len(parts) < 2 {
-		return
-	}
-
-	action := parts[0]
+	action, cluster, ns, name := parseCallbackData(data)
 
 	// Dedup: skip if same operation is already in-flight for this chat
 	inflightKey := fmt.Sprintf("%d:%s", chatID, data)
@@ -37,50 +51,49 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 	switch action {
 	case "ai":
-		if len(parts) < 3 {
+		if name == "" {
 			b.inflight.Delete(inflightKey)
 			return
 		}
 		go func() {
 			defer b.inflight.Delete(inflightKey)
-			b.handleAIInvestigation(ctx, chatID, alertMsgID, parts[1], parts[2])
+			b.handleAIInvestigation(ctx, chatID, alertMsgID, cluster, ns, name)
 		}()
 
 	case "static":
-		if len(parts) < 3 {
+		if name == "" {
 			b.inflight.Delete(inflightKey)
 			return
 		}
 		go func() {
 			defer b.inflight.Delete(inflightKey)
-			b.handleStaticAnalysis(ctx, chatID, alertMsgID, parts[1], parts[2])
+			b.handleStaticAnalysis(ctx, chatID, alertMsgID, cluster, ns, name)
 		}()
 
 	case "logs":
-		if len(parts) < 3 {
+		if name == "" {
 			b.inflight.Delete(inflightKey)
 			return
 		}
 		go func() {
 			defer b.inflight.Delete(inflightKey)
-			b.handleShowLogs(ctx, chatID, alertMsgID, parts[1], parts[2])
+			b.handleShowLogs(ctx, chatID, alertMsgID, cluster, ns, name)
 		}()
 
 	case "scan":
-		ns := parts[1]
 		go func() {
 			defer b.inflight.Delete(inflightKey)
-			b.handleScan(ctx, chatID, ParsedMessage{Command: "scan", Namespace: ns})
+			b.handleScan(ctx, chatID, ParsedMessage{Command: "scan", Namespace: ns, Cluster: cluster})
 		}()
 
 	case "rerun":
-		if len(parts) < 3 {
+		if name == "" {
 			b.inflight.Delete(inflightKey)
 			return
 		}
 		go func() {
 			defer b.inflight.Delete(inflightKey)
-			b.handleStaticAnalysis(ctx, chatID, alertMsgID, parts[1], parts[2])
+			b.handleStaticAnalysis(ctx, chatID, alertMsgID, cluster, ns, name)
 		}()
 
 	default:
@@ -89,38 +102,42 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 }
 
 // handleAIInvestigation collects evidence and sends to LLM for free-form analysis.
-func (b *Bot) handleAIInvestigation(ctx context.Context, chatID int64, replyTo int, ns, name string) {
+func (b *Bot) handleAIInvestigation(ctx context.Context, chatID int64, replyTo int, clusterName, ns, name string) {
+	cluster := b.getCluster(clusterName)
 	target := b.resolveOrFallback(ns, name)
+	target.Cluster = cluster.Name
 	progressMsg := b.sendReply(chatID, replyTo, fmt.Sprintf("🤖 AI investigating %s...", target.FullName()))
 
-	bundle := b.collectEvidence(ctx, target, progressMsg)
+	bundle := b.collectEvidence(ctx, cluster, target, progressMsg)
 
-	if b.engine.HasSummarizer() {
+	if cluster.Engine.HasSummarizer() {
 		b.updateProgress(progressMsg, chatID, fmt.Sprintf("🤖 AI investigating %s...\n✓ Data collected, asking LLM...", target.FullName()))
 
 		intent := domain.IntentCrashLoop
-		summary, err := b.engine.SummarizeWithLLM(ctx, intent, bundle)
+		summary, err := cluster.Engine.SummarizeWithLLM(ctx, intent, bundle)
 		if err != nil {
 			b.logger.Warn("AI investigation failed", "error", err)
 			text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ LLM unavailable: %s\n\nUse 📊 Static Analysis instead.", esc(err.Error()))
-			keyboard := buildPostDiagnosisKeyboard(ns, name)
+			keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
 			b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 			return
 		}
 
 		text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n%s", esc(summary))
-		keyboard := buildPostDiagnosisKeyboard(ns, name)
+		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
 		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 	} else {
 		text := "🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ LLM not configured.\n\nSet <code>llm.enabled: true</code> in config.yaml or use 📊 Static Analysis."
-		keyboard := buildPostDiagnosisKeyboard(ns, name)
+		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
 		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 	}
 }
 
 // handleStaticAnalysis runs the deterministic playbook scoring pipeline.
-func (b *Bot) handleStaticAnalysis(ctx context.Context, chatID int64, replyTo int, ns, name string) {
+func (b *Bot) handleStaticAnalysis(ctx context.Context, chatID int64, replyTo int, clusterName, ns, name string) {
+	cluster := b.getCluster(clusterName)
 	target := b.resolveOrFallback(ns, name)
+	target.Cluster = cluster.Name
 
 	intent := domain.ClassifyIntent(name)
 	if intent == domain.IntentUnknown {
@@ -142,9 +159,9 @@ func (b *Bot) handleStaticAnalysis(ctx context.Context, chatID int64, replyTo in
 		b.updateProgress(progressMsg, chatID, fmt.Sprintf("📊 Analyzing %s...\n%s", target.FullName(), text))
 	}
 
-	result := b.engine.RunWithoutLLM(ctx, req, progress)
+	result := cluster.Engine.RunWithoutLLM(ctx, req, progress)
 	formatted := FormatResultCompact(result)
-	keyboard := buildPostDiagnosisKeyboard(ns, name)
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
 
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, formatted, keyboard)
@@ -154,8 +171,10 @@ func (b *Bot) handleStaticAnalysis(ctx context.Context, chatID int64, replyTo in
 }
 
 // handleShowLogs queries VictoriaLogs and shows raw container logs.
-func (b *Bot) handleShowLogs(ctx context.Context, chatID int64, replyTo int, ns, name string) {
+func (b *Bot) handleShowLogs(ctx context.Context, chatID int64, replyTo int, clusterName, ns, name string) {
+	cluster := b.getCluster(clusterName)
 	target := b.resolveOrFallback(ns, name)
+	target.Cluster = cluster.Name
 	progressMsg := b.sendReply(chatID, replyTo, fmt.Sprintf("📜 Fetching logs for %s...", target.FullName()))
 
 	timeRange := domain.TimeRange{
@@ -165,8 +184,8 @@ func (b *Bot) handleShowLogs(ctx context.Context, chatID int64, replyTo int, ns,
 
 	// Try to get real logs from provider
 	var logLines []string
-	if b.engine.HasLogsProvider() {
-		facts, err := b.engine.CollectLogs(ctx, target, timeRange)
+	if cluster.Engine.HasLogsProvider() {
+		facts, err := cluster.Engine.CollectLogs(ctx, target, timeRange)
 		if err != nil {
 			b.logger.Warn("failed to fetch logs", "target", target.FullName(), "error", err)
 		} else if facts != nil {
@@ -199,7 +218,7 @@ func (b *Bot) handleShowLogs(ctx context.Context, chatID int64, replyTo int, ns,
 			esc(target.Kind), esc(target.ResourceName), esc(ns))
 	}
 
-	keyboard := buildPostDiagnosisKeyboard(ns, name)
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 	} else {
@@ -222,12 +241,12 @@ func (b *Bot) resolveOrFallback(ns, name string) *domain.Target {
 	return target
 }
 
-func (b *Bot) collectEvidence(ctx context.Context, target *domain.Target, progressMsg int) *domain.EvidenceBundle {
+func (b *Bot) collectEvidence(ctx context.Context, cluster *ClusterEntry, target *domain.Target, progressMsg int) *domain.EvidenceBundle {
 	timeRange := domain.TimeRange{
 		From: time.Now().Add(-1 * time.Hour),
 		To:   time.Now(),
 	}
-	collector := b.engine.GetCollector()
+	collector := cluster.Engine.GetCollector()
 	if collector == nil {
 		return &domain.EvidenceBundle{Target: target}
 	}

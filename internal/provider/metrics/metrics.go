@@ -16,6 +16,7 @@ import (
 // Provider collects metrics from VictoriaMetrics via PromQL HTTP API.
 type Provider struct {
 	baseURL    string
+	cluster    string // cluster label filter for multi-cluster setups
 	httpClient *http.Client
 }
 
@@ -23,6 +24,17 @@ type Provider struct {
 func New(baseURL string) *Provider {
 	return &Provider{
 		baseURL: baseURL,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// NewWithCluster creates a metrics provider that filters by cluster label.
+func NewWithCluster(baseURL, cluster string) *Provider {
+	return &Provider{
+		baseURL: baseURL,
+		cluster: cluster,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -39,10 +51,16 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target, time
 	// Use pod name prefix or container name for filtering
 	podFilter := target.ResourceName + ".*"
 
+	// Build cluster filter for PromQL
+	clusterFilter := ""
+	if p.cluster != "" {
+		clusterFilter = fmt.Sprintf(`cluster="%s",`, p.cluster)
+	}
+
 	// Restart rate (restarts in last 15 min)
 	restartRate, err := p.queryScalar(ctx, fmt.Sprintf(
-		`sum(increase(kube_pod_container_status_restarts_total{namespace="%s",pod=~"%s"}[15m]))`,
-		namespace, podFilter,
+		`sum(increase(kube_pod_container_status_restarts_total{%snamespace="%s",pod=~"%s"}[15m]))`,
+		clusterFilter, namespace, podFilter,
 	))
 	if err == nil && restartRate != nil {
 		facts.RestartRate = restartRate
@@ -50,8 +68,8 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target, time
 
 	// Memory usage (current, bytes)
 	memUsage, err := p.queryScalar(ctx, fmt.Sprintf(
-		`sum(container_memory_working_set_bytes{namespace="%s",pod=~"%s",container!=""})`,
-		namespace, podFilter,
+		`sum(container_memory_working_set_bytes{%snamespace="%s",pod=~"%s",container!=""})`,
+		clusterFilter, namespace, podFilter,
 	))
 	if err == nil && memUsage != nil {
 		facts.MemoryUsage = memUsage
@@ -59,8 +77,8 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target, time
 
 	// Memory limit (bytes)
 	memLimit, err := p.queryScalar(ctx, fmt.Sprintf(
-		`sum(kube_pod_container_resource_limits{namespace="%s",pod=~"%s",resource="memory"})`,
-		namespace, podFilter,
+		`sum(kube_pod_container_resource_limits{%snamespace="%s",pod=~"%s",resource="memory"})`,
+		clusterFilter, namespace, podFilter,
 	))
 	if err == nil && memLimit != nil {
 		facts.MemoryLimit = memLimit
@@ -68,8 +86,8 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target, time
 
 	// CPU usage (cores)
 	cpuUsage, err := p.queryScalar(ctx, fmt.Sprintf(
-		`sum(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s",container!=""}[5m]))`,
-		namespace, podFilter,
+		`sum(rate(container_cpu_usage_seconds_total{%snamespace="%s",pod=~"%s",container!=""}[5m]))`,
+		clusterFilter, namespace, podFilter,
 	))
 	if err == nil && cpuUsage != nil {
 		facts.CPUUsage = cpuUsage
@@ -77,8 +95,8 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target, time
 
 	// CPU limit (cores)
 	cpuLimit, err := p.queryScalar(ctx, fmt.Sprintf(
-		`sum(kube_pod_container_resource_limits{namespace="%s",pod=~"%s",resource="cpu"})`,
-		namespace, podFilter,
+		`sum(kube_pod_container_resource_limits{%snamespace="%s",pod=~"%s",resource="cpu"})`,
+		clusterFilter, namespace, podFilter,
 	))
 	if err == nil && cpuLimit != nil {
 		facts.CPULimit = cpuLimit

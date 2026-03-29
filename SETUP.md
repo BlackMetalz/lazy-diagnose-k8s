@@ -1,6 +1,6 @@
 # Local Development Setup
 
-Guide for setting up a dev environment on Mac M1 (16GB RAM).
+Guide for setting up a dev environment. Tested on macOS (M1/M2) and Ubuntu 22.04+.
 
 ## Data Flow Overview
 
@@ -24,9 +24,60 @@ Without this pipeline, providers query empty data sources.
 
 ## Prerequisites
 
+**macOS:**
 ```bash
 brew install kind kubectl go
 # Docker Desktop must be running, allocate >= 4GB RAM
+```
+
+**Ubuntu:**
+```bash
+# Docker Engine (not Docker Desktop)
+sudo apt-get install -y docker.io
+# kind
+go install sigs.k8s.io/kind@latest
+# kubectl
+sudo snap install kubectl --classic
+# go
+sudo snap install go --classic
+```
+
+---
+
+## Host IP: macOS vs Ubuntu
+
+Pods inside kind need to reach VictoriaMetrics/VictoriaLogs running on the host. The monitoring manifests use `host.docker.internal` by default — this works on **macOS** (Docker Desktop) but **not on Ubuntu** (Docker Engine).
+
+**macOS (Docker Desktop):** `host.docker.internal` resolves automatically. No extra steps needed.
+
+**Ubuntu (Docker Engine):** Use the Docker bridge gateway IP instead. Run this once to get it:
+
+```bash
+HOST_IP=$(docker network inspect kind -f '{{range .IPAM.Config}}{{if .Gateway}}{{.Gateway}}{{end}}{{end}}' | grep -oE '([0-9]+\.){3}[0-9]+')
+echo "Host IP: $HOST_IP"
+# Example output: 172.19.0.1
+```
+
+Then patch all monitoring manifests to replace `host.docker.internal` with the actual IP:
+
+```bash
+# Patch all monitoring YAMLs at once
+sed -i "s|host.docker.internal|${HOST_IP}|g" \
+  deploy/monitoring/vmagent.yaml \
+  deploy/monitoring/vmagent-cluster2.yaml \
+  deploy/monitoring/vlagent.yaml \
+  deploy/monitoring/vlagent-cluster2.yaml \
+  deploy/monitoring/vmalert.yaml \
+  deploy/monitoring/alertmanager.yaml \
+  deploy/bot/deployment.yaml
+```
+
+> **Important:** Don't commit these changes — they're local to your machine. To undo: `git checkout deploy/`
+
+Alternatively, set `HOST_IP` and use the Makefile shortcut:
+
+```bash
+make host-ip-patch HOST_IP=172.19.0.1
 ```
 
 ---
@@ -45,7 +96,7 @@ kubectl get nodes
 
 ## Step 2: VictoriaMetrics + VictoriaLogs on host
 
-Run on Docker host, receive data from inside the kind cluster via `host.docker.internal`.
+Run on Docker host. Pods inside kind reach these via `host.docker.internal` (macOS) or the Docker bridge gateway IP (Ubuntu — see [Host IP section](#host-ip-macos-vs-ubuntu) above).
 
 ```bash
 # VictoriaMetrics — receives metrics from vmagent
@@ -55,8 +106,7 @@ docker run -d \
   -p 8428:8428 \
   -v victoria-metrics-data:/victoria-metrics-data \
   victoriametrics/victoria-metrics:v1.138.0 \
-  -retentionPeriod=7d \
-  -selfScrapeInterval=15s
+  -retentionPeriod=7d
 
 # VictoriaLogs — receives logs from vlagent
 docker run -d \
@@ -65,6 +115,9 @@ docker run -d \
   -p 9428:9428 \
   -v victoria-logs-data:/victoria-logs-data \
   victoriametrics/victoria-logs:v1.48.0
+
+# Check it
+docker ps
 ```
 
 **Verify:**
@@ -102,6 +155,9 @@ kubectl apply -f deploy/monitoring/kube-state-metrics.yaml
 # vmagent — scrapes kube-state-metrics + kubelet/cAdvisor, pushes to VictoriaMetrics
 kubectl apply -f deploy/monitoring/vmagent.yaml
 
+# Sleep to wait
+sleep 30
+
 # Verify
 kubectl -n monitoring get pods
 kubectl -n monitoring logs deployment/vmagent --tail=20
@@ -110,7 +166,7 @@ kubectl -n monitoring logs deployment/vmagent --tail=20
 **Verify metrics are flowing:**
 ```bash
 # Wait ~30s for vmagent to complete first scrape cycle
-
+sleep 30
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=kube_pod_info' | jq '.data.result | length'
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=container_memory_usage_bytes' | jq '.data.result | length'
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=kube_pod_container_status_restarts_total' | jq '.data.result[:2]'
@@ -200,7 +256,7 @@ kubectl -n monitoring port-forward svc/alertmanager 9093:9093 &
 curl -s http://localhost:9093/api/v2/alerts | jq '.[].labels.alertname'
 ```
 
-**Note:** The bot must be running with `webhook.enabled: true` (default port `:8080`) for Alertmanager to deliver alerts. Alertmanager inside kind reaches the bot via `host.docker.internal:8080`.
+**Note:** The bot must be running with `webhook.enabled: true` (default port `:8080`) for Alertmanager to deliver alerts. Alertmanager inside kind reaches the bot via `host.docker.internal:8080` (macOS) or `<HOST_IP>:8080` (Ubuntu — see [Host IP section](#host-ip-macos-vs-ubuntu)).
 
 ---
 
@@ -297,20 +353,42 @@ docker volume rm victoria-metrics-data victoria-logs-data
 
 ## Troubleshooting
 
-**vmagent can't push metrics:**
+**vmagent can't push metrics (`lookup host.docker.internal: no such host`):**
+
+This is the most common issue on **Ubuntu**. `host.docker.internal` only works with Docker Desktop (macOS/Windows).
+
 ```bash
 kubectl -n monitoring logs deployment/vmagent
-
-# Common issue: host.docker.internal not resolving
-# Fix: make sure Docker Desktop is running (not colima/rancher)
-kubectl -n monitoring exec deployment/vmagent -- wget -qO- http://host.docker.internal:8428/api/v1/query?query=up
 ```
 
-**vlagent can't push logs:**
+Fix: patch manifests with the Docker bridge gateway IP (see [Host IP section](#host-ip-macos-vs-ubuntu)):
 ```bash
-kubectl -n monitoring logs daemonset/vlagent
+HOST_IP=$(docker network inspect kind -f '{{range .IPAM.Config}}{{if .Gateway}}{{.Gateway}}{{end}}{{end}}' | grep -oE '([0-9]+\.){3}[0-9]+')
+make host-ip-patch HOST_IP=$HOST_IP
 
-kubectl -n monitoring exec daemonset/vlagent -- wget -qO- http://host.docker.internal:9428/health
+# Re-apply and restart
+kubectl apply -f deploy/monitoring/vmagent.yaml
+kubectl -n monitoring rollout restart deployment/vmagent
+```
+
+Verify connectivity from inside the pod:
+```bash
+# macOS
+kubectl -n monitoring exec deployment/vmagent -- wget -qO- http://host.docker.internal:8428/api/v1/query?query=up
+
+# Ubuntu (use your HOST_IP)
+kubectl -n monitoring exec deployment/vmagent -- wget -qO- http://172.19.0.1:8428/api/v1/query?query=up
+```
+
+**vlagent can't push logs (same `no such host` error):**
+
+Same root cause as above. After patching manifests:
+```bash
+kubectl apply -f deploy/monitoring/vlagent.yaml
+kubectl -n monitoring rollout restart daemonset/vlagent
+
+# Verify
+kubectl -n monitoring exec daemonset/vlagent -- wget -qO- http://172.19.0.1:9428/health
 ```
 
 **VictoriaMetrics/Logs container won't start:**
@@ -325,6 +403,6 @@ lsof -i :9428
 
 **kind cluster won't start:**
 ```bash
-docker ps  # Docker Desktop must be running
+docker ps  # Docker Desktop (macOS) or Docker Engine (Ubuntu) must be running
 kind get clusters
 ```

@@ -14,8 +14,17 @@ type Config struct {
 	LLM        LLMConfig        `yaml:"llm"`
 	MCP        MCPConfig        `yaml:"mcp"`
 	Providers  ProvidersConfig  `yaml:"providers"`
+	Clusters   []ClusterConfig  `yaml:"clusters"`
 	Playbooks  PlaybookRules    `yaml:"playbooks"`
 	Redaction  RedactionRules   `yaml:"redaction"`
+}
+
+// ClusterConfig defines a Kubernetes cluster connection.
+type ClusterConfig struct {
+	Name       string `yaml:"name"`       // display name, e.g. "lazy-diag-2"
+	Context    string `yaml:"context"`    // kubeconfig context name
+	Kubeconfig string `yaml:"kubeconfig"` // optional custom kubeconfig path (default: ~/.kube/config)
+	Default    bool   `yaml:"default"`    // default cluster for commands without -c
 }
 
 // LLMConfig configures the LLM summarizer backend.

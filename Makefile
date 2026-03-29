@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts
+.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts cluster2-create cluster2-monitoring cluster2-scenarios cluster2-clean host-ip-patch
 
 BINARY=lazy-diagnose-k8s
 IMAGE=lazy-diagnose-k8s:latest
@@ -71,3 +71,39 @@ scenarios-clean:
 	@kubectl delete pvc data-pvc-test -n demo-infra --ignore-not-found
 	@kubectl delete ns demo-prod demo-staging demo-infra --ignore-not-found
 	@echo "All scenarios removed."
+
+# Cluster 2 (multi-cluster setup)
+cluster2-create:
+	kind create cluster --config deploy/kind-config-cluster2.yaml
+
+cluster2-monitoring:
+	kubectl --context kind-lazy-diag-2 create namespace monitoring --dry-run=client -o yaml | kubectl --context kind-lazy-diag-2 apply -f -
+	kubectl --context kind-lazy-diag-2 apply -f deploy/monitoring/kube-state-metrics.yaml
+	kubectl --context kind-lazy-diag-2 apply -f deploy/monitoring/vmagent-cluster2.yaml
+	kubectl --context kind-lazy-diag-2 apply -f deploy/monitoring/vlagent-cluster2.yaml
+
+cluster2-scenarios:
+	@kubectl --context kind-lazy-diag-2 apply -f deploy/test-workloads/namespaces.yaml
+	@kubectl --context kind-lazy-diag-2 apply -f deploy/test-workloads/
+	@echo "Scenarios deployed to cluster2. Check: kubectl --context kind-lazy-diag-2 get pods -A"
+
+cluster2-clean:
+	kind delete cluster --name lazy-diag-2
+
+# Ubuntu: patch host.docker.internal → real host IP (Docker bridge gateway)
+# Usage: make host-ip-patch HOST_IP=172.19.0.1
+# To undo: git checkout deploy/
+host-ip-patch:
+ifndef HOST_IP
+	$(error HOST_IP is required. Run: HOST_IP=$$(docker network inspect kind -f '{{range .IPAM.Config}}{{if .Gateway}}{{.Gateway}}{{end}}{{end}}' | grep -oE '([0-9]+\.){3}[0-9]+') make host-ip-patch)
+endif
+	@echo "Patching host.docker.internal → $(HOST_IP)"
+	@sed -i 's|host\.docker\.internal|$(HOST_IP)|g' \
+		deploy/monitoring/vmagent.yaml \
+		deploy/monitoring/vmagent-cluster2.yaml \
+		deploy/monitoring/vlagent.yaml \
+		deploy/monitoring/vlagent-cluster2.yaml \
+		deploy/monitoring/vmalert.yaml \
+		deploy/monitoring/alertmanager.yaml \
+		deploy/bot/deployment.yaml
+	@echo "Done. To undo: git checkout deploy/"

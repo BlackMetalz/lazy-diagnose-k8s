@@ -47,6 +47,7 @@ func ParseAlertmanagerPayload(body []byte) (*AlertmanagerPayload, error) {
 type AlertTarget struct {
 	Name        string
 	Namespace   string
+	Cluster     string // cluster name from external_labels (multi-cluster)
 	Kind        string // deployment, pod, statefulset, etc.
 	PodName     string // specific pod name if available
 	Container   string // container name if available
@@ -106,6 +107,7 @@ func extractTarget(alert Alert) AlertTarget {
 	// Try to find the K8s target from labels
 	// Priority: pod > deployment > statefulset > daemonset > container
 
+	t.Cluster = firstOf(alert.Labels, "cluster")
 	t.Namespace = firstOf(alert.Labels, "namespace", "exported_namespace")
 
 	// Pod-level alerts (kube-state-metrics)
