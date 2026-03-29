@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts cluster2-create cluster2-monitoring cluster2-scenarios cluster2-clean host-ip-patch
+.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts cluster2-create cluster2-monitoring cluster2-scenarios cluster2-clean host-ip-patch ubuntu-monitoring ubuntu-cluster2-monitoring
 
 BINARY=lazy-diagnose-k8s
 IMAGE=lazy-diagnose-k8s:latest
@@ -90,20 +90,45 @@ cluster2-scenarios:
 cluster2-clean:
 	kind delete cluster --name lazy-diag-2
 
-# Ubuntu: patch host.docker.internal → real host IP (Docker bridge gateway)
-# Usage: make host-ip-patch HOST_IP=172.19.0.1
-# To undo: git checkout deploy/
-host-ip-patch:
-ifndef HOST_IP
-	$(error HOST_IP is required. Run: HOST_IP=$$(docker network inspect kind -f '{{range .IPAM.Config}}{{if .Gateway}}{{.Gateway}}{{end}}{{end}}' | grep -oE '([0-9]+\.){3}[0-9]+') make host-ip-patch)
-endif
-	@echo "Patching host.docker.internal → $(HOST_IP)"
-	@sed -i 's|host\.docker\.internal|$(HOST_IP)|g' \
-		deploy/monitoring/vmagent.yaml \
-		deploy/monitoring/vmagent-cluster2.yaml \
-		deploy/monitoring/vlagent.yaml \
-		deploy/monitoring/vlagent-cluster2.yaml \
-		deploy/monitoring/vmalert.yaml \
-		deploy/monitoring/alertmanager.yaml \
-		deploy/bot/deployment.yaml
-	@echo "Done. To undo: git checkout deploy/"
+# ──── Ubuntu (Docker Engine) ────
+# Uses deploy/monitoring/ubuntu/ YAMLs that read host IP from a ConfigMap.
+# No file patching needed — auto-detects the kind Docker bridge gateway IP.
+
+# Detect host IP from kind Docker network (IPv4 gateway)
+KIND_HOST_IP = $(shell docker network inspect kind -f '{{range .IPAM.Config}}{{if .Gateway}}{{.Gateway}} {{end}}{{end}}' 2>/dev/null | grep -oE '([0-9]+\.){3}[0-9]+' | head -1)
+
+# Deploy monitoring to cluster 1 (Ubuntu)
+ubuntu-monitoring:
+	@if [ -z "$(KIND_HOST_IP)" ]; then echo "ERROR: Cannot detect kind network gateway. Is the kind cluster running?"; exit 1; fi
+	@echo "Detected host IP: $(KIND_HOST_IP)"
+	kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+	kubectl -n monitoring create configmap host-endpoints \
+		--from-literal=vm_url=http://$(KIND_HOST_IP):8428 \
+		--from-literal=vm_write_url=http://$(KIND_HOST_IP):8428/api/v1/write \
+		--from-literal=vl_write_url=http://$(KIND_HOST_IP):9428/insert/native \
+		--dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -f deploy/monitoring/kube-state-metrics.yaml
+	kubectl apply -f deploy/monitoring/ubuntu/vmagent.yaml
+	kubectl apply -f deploy/monitoring/ubuntu/vlagent.yaml
+	kubectl apply -f deploy/monitoring/alert-rules.yaml
+	./deploy/monitoring/ubuntu/gen-alertmanager-config.sh $(KIND_HOST_IP)
+	kubectl apply -f deploy/monitoring/ubuntu/alertmanager.yaml
+	kubectl apply -f deploy/monitoring/ubuntu/vmalert.yaml
+	@echo ""
+	@echo "Done. Ubuntu monitoring deployed to cluster 1 (host: $(KIND_HOST_IP))"
+
+# Deploy monitoring to cluster 2 (Ubuntu)
+ubuntu-cluster2-monitoring:
+	@if [ -z "$(KIND_HOST_IP)" ]; then echo "ERROR: Cannot detect kind network gateway. Is the kind cluster running?"; exit 1; fi
+	@echo "Detected host IP: $(KIND_HOST_IP)"
+	kubectl --context kind-lazy-diag-2 create namespace monitoring --dry-run=client -o yaml | kubectl --context kind-lazy-diag-2 apply -f -
+	kubectl --context kind-lazy-diag-2 -n monitoring create configmap host-endpoints \
+		--from-literal=vm_url=http://$(KIND_HOST_IP):8428 \
+		--from-literal=vm_write_url=http://$(KIND_HOST_IP):8428/api/v1/write \
+		--from-literal=vl_write_url=http://$(KIND_HOST_IP):9428/insert/native \
+		--dry-run=client -o yaml | kubectl --context kind-lazy-diag-2 apply -f -
+	kubectl --context kind-lazy-diag-2 apply -f deploy/monitoring/kube-state-metrics.yaml
+	kubectl --context kind-lazy-diag-2 apply -f deploy/monitoring/ubuntu/vmagent-cluster2.yaml
+	kubectl --context kind-lazy-diag-2 apply -f deploy/monitoring/ubuntu/vlagent-cluster2.yaml
+	@echo ""
+	@echo "Done. Ubuntu monitoring deployed to cluster 2 (host: $(KIND_HOST_IP))"

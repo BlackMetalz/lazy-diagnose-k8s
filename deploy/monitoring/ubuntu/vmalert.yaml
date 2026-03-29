@@ -1,0 +1,52 @@
+# vmalert evaluates alerting rules against VictoriaMetrics
+# and sends alerts to Alertmanager
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmalert
+  namespace: monitoring
+  labels:
+    app: vmalert
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vmalert
+  template:
+    metadata:
+      labels:
+        app: vmalert
+    spec:
+      containers:
+        - name: vmalert
+          image: victoriametrics/vmalert:v1.138.0
+          args:
+            - "--datasource.url=$(VM_URL)"
+            - "--remoteRead.url=$(VM_URL)"
+            - "--remoteWrite.url=$(VM_URL)"
+            - "--notifier.url=http://alertmanager.monitoring.svc:9093"
+            - "--rule=/etc/vmalert/rules/*.yml"
+            - "--evaluationInterval=15s"
+          env:
+            - name: VM_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: host-endpoints
+                  key: vm_url
+          ports:
+            - containerPort: 8880
+              name: http
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/vmalert/rules
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      volumes:
+        - name: rules
+          configMap:
+            name: alert-rules
