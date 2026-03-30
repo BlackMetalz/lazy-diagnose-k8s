@@ -177,6 +177,10 @@ func main() {
 			BotName:     cfg.Webhook.BotName,
 			ClusterName: cfg.Webhook.ClusterName,
 		},
+		telegram.RateLimitOpts{
+			MaxRequests: cfg.Telegram.RateLimit.MaxRequests,
+			WindowSecs:  cfg.Telegram.RateLimit.WindowSecs,
+		},
 		logger,
 	)
 	if err != nil {

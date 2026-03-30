@@ -22,8 +22,7 @@ type ParsedMessage struct {
 //
 //	/check checkout
 //	/check checkout -n staging
-//	/diag payment just deployed, seeing 5xx
-//	/pod payment-api-7f8b9c-x4k2p
+//	/check checkout -c lazy-diag-2
 //	/deploy checkout
 //	/scan                          (scan default namespace)
 //	/scan prod                     (scan specific namespace)
@@ -52,7 +51,7 @@ func ParseMessage(text string) ParsedMessage {
 				Cluster:   cluster,
 				RawText:   text,
 			}
-		case "diag", "check", "pod", "deploy":
+		case "check", "deploy":
 			target, ns, cluster := extractTargetAndFlags(parts[1:])
 			return ParsedMessage{
 				Command:   cmd,
@@ -393,21 +392,18 @@ func FormatHelpMessage() string {
 Kubernetes diagnosis via Telegram. Collects data from K8s, metrics, and logs — returns diagnosis + suggested commands.
 
 <b>Commands:</b>
-/scan [namespace] [-c cluster] — Find all unhealthy pods
-/check &lt;target&gt; [-n ns] [-c cluster] — General health check
-/diag &lt;target&gt; &lt;context&gt; — Diagnosis with description
-/pod &lt;pod-name&gt; [-c cluster] — Check a specific pod
+/check &lt;target&gt; [-n ns] [-c cluster] — Diagnose a target
 /deploy &lt;deployment&gt; [-c cluster] — Check rollout status
+/scan [namespace] [-c cluster] — Find all unhealthy pods
 /help — This message
 
 <b>Examples:</b>
-• <code>/scan</code> — scan default namespace
-• <code>/scan prod</code> — scan specific namespace
 • <code>/check checkout</code>
 • <code>/check checkout -n staging</code>
 • <code>/check checkout -c lazy-diag-2</code>
-• <code>/diag payment just deployed, seeing 5xx</code>
-• <code>/deploy checkout</code>
+• <code>/deploy payment</code>
+• <code>/scan</code> — scan default namespace
+• <code>/scan prod</code> — scan specific namespace
 
 <b>What it detects:</b>
 • CrashLoop — OOM, missing config, dependency fail, probe issue, bad image

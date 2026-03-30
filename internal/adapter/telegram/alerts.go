@@ -69,17 +69,27 @@ func buildAlertKeyboard(cluster, ns, resource string) tgbotapi.InlineKeyboardMar
 	)
 }
 
-// buildPostDiagnosisKeyboard creates buttons shown after a diagnosis result.
-// Only AI + Logs — Static already ran, Scan NS is separate concern.
-func buildPostDiagnosisKeyboard(cluster, ns, resource string) tgbotapi.InlineKeyboardMarkup {
+// buildPostDiagnosisKeyboard creates follow-up buttons after a diagnosis result.
+// Shows the actions the user hasn't just run, so they can try alternatives.
+// completedAction: "ai", "static", or "logs" — the action that just finished.
+func buildPostDiagnosisKeyboard(cluster, ns, resource, completedAction string) tgbotapi.InlineKeyboardMarkup {
 	aiData := fmt.Sprintf("ai:%s:%s:%s", cluster, ns, resource)
+	staticData := fmt.Sprintf("static:%s:%s:%s", cluster, ns, resource)
 	logsData := fmt.Sprintf("logs:%s:%s:%s", cluster, ns, resource)
 
+	var buttons []tgbotapi.InlineKeyboardButton
+	if completedAction != "ai" {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("🤖 AI", aiData))
+	}
+	if completedAction != "static" {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("📊 Static", staticData))
+	}
+	if completedAction != "logs" {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("📜 Logs", logsData))
+	}
+
 	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🤖 AI Investigation", aiData),
-			tgbotapi.NewInlineKeyboardButtonData("📜 Logs", logsData),
-		),
+		tgbotapi.NewInlineKeyboardRow(buttons...),
 	)
 }
 

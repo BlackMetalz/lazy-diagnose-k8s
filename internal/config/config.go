@@ -43,9 +43,16 @@ type ProvidersConfig struct {
 }
 
 type TelegramConfig struct {
-	Token          string   `yaml:"token"`
-	AllowedChatIDs []int64  `yaml:"allowed_chat_ids,omitempty"`
-	AlertChatIDs   []int64  `yaml:"alert_chat_ids,omitempty"` // chats to receive alert notifications
+	Token          string          `yaml:"token"`
+	AllowedChatIDs []int64         `yaml:"allowed_chat_ids,omitempty"`
+	AlertChatIDs   []int64         `yaml:"alert_chat_ids,omitempty"` // chats to receive alert notifications
+	RateLimit      RateLimitConfig `yaml:"rate_limit"`
+}
+
+// RateLimitConfig configures per-user rate limiting.
+type RateLimitConfig struct {
+	MaxRequests int `yaml:"max_requests"` // max requests per window (default: 10)
+	WindowSecs  int `yaml:"window_secs"`  // window duration in seconds (default: 60)
 }
 
 type WebhookConfig struct {

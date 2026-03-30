@@ -12,155 +12,62 @@ The bot does not pattern-match text strings or let an LLM decide what to query. 
 
 ## System Diagram
 
+```mermaid
+flowchart TD
+    subgraph Entry Points
+        AM["Alertmanager<br>webhook POST :8080"] --> WH["Webhook Server<br>internal/webhook/"]
+        TG["Telegram<br>/check /deploy /scan"] --> TA["Telegram Adapter<br>internal/adapter/telegram/"]
+    end
+
+    WH --> |"extract target<br>from alert labels"| NOTIFY["Send notification<br>🤖 AI | 📊 Static | 📜 Logs"]
+    TA --> |"/scan"| SCAN["Scan namespace<br>kubernetes.Scanner"]
+    TA --> |"/check /deploy"| DIAG
+
+    NOTIFY --> |"user clicks button"| DIAG{Action?}
+
+    DIAG --> |"📊 Static"| COLLECT
+    DIAG --> |"🤖 AI"| COLLECT
+    DIAG --> |"📜 Logs"| LOGS_DIRECT["Query logs only"]
+
+    subgraph COLLECT["Provider Collector (concurrent + timeout)"]
+        K8S["K8s Provider<br>client-go<br>pods, events, logs,<br>owner chain, rollout"]
+        MET["Metrics Provider<br>PromQL → VictoriaMetrics<br>CPU, memory, restarts"]
+        LOG["Logs Provider<br>LogsQL → VictoriaLogs<br>container logs (fallback)"]
+    end
+
+    COLLECT --> EB["Evidence Bundle<br>K8sFacts + LogsFacts + MetricsFacts"]
+
+    EB --> |"📊 Static"| ANALYZER["Evidence-First Analyzer<br>1. Container state<br>2. Events<br>3. Logs<br>4. Metrics<br>5. Correlate"]
+    EB --> |"🤖 AI"| LLM["LLM Summarizer<br>OpenAI-compatible API"]
+
+    ANALYZER --> COMPOSER["Command Composer<br>kubectl suggestions"]
+    COMPOSER --> RESULT["Diagnosis Result<br>summary + confidence +<br>hypothesis + evidence"]
+
+    LLM --> RESULT_AI["AI Summary<br>free-form analysis"]
+
+    RESULT --> OUTPUT["Telegram reply<br>+ follow-up buttons"]
+    RESULT_AI --> OUTPUT
+    LOGS_DIRECT --> OUTPUT
+    SCAN --> SCAN_OUT["Unhealthy pod list"]
 ```
-┌──────────────────────────────────────┐  ┌─────────────────────────────┐
-│          Alertmanager                │  │        Telegram             │
-│     (fires alert webhook)           │  │    (user sends /check)       │
-└──────────────────┬───────────────────┘  └──────────────┬──────────────┘
-                   │ POST /webhook/alertmanager           │
-                   ▼                                      ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                    Entry Points                                      │
-│                                                                      │
-│  Webhook Server (:8080)          Telegram Adapter (polling)          │
-│  • Parse Alertmanager payload    • Parse message → command+target    │
-│  • Extract K8s target from       • Handle /check, /scan, /deploy     │
-│    alert labels                  • Handle inline button callbacks    │
-│  • Send NOTIFICATION only        • Fuzzy pod search as fallback      │
-│    (no auto-diagnosis)           • Send progress + final result      │
-│                                                                      │
-│  Files: internal/webhook/        Files: internal/adapter/telegram/   │
-└──────────────────────┬───────────────────────────────────────────────┘
-                       │
-            ┌──────────┴──────────┐
-            │  Alert flow         │  Manual flow
-            │  (notification      │  (/check, /scan)
-            │   + 3 buttons)      │
-            ▼                     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    User Action / Command                        │
-│                                                                 │
-│  3 modes (from alert buttons or /check command):                │
-│                                                                 │
-│  🤖 AI Investigation    📊 Static Analysis    📜 Logs            │
-│  collect evidence →     collect evidence →     query logs →     │
-│  send to LLM →          run analyzer.go →      show raw         │
-│  free-form analysis     evidence-first rules   container logs   │
-└──────────────────────┬──────────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    Provider Collector                            │
-│                                                                  │
-│  Runs providers concurrently with per-provider timeout.          │
-│  Returns partial results if any provider fails (degraded mode).  │
-│                                                                  │
-│  File: internal/provider/provider.go                             │
-│                                                                  │
-│  ┌────────────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   K8s Provider      │  │   Metrics    │ │   Logs      │     │
-│  │   (PRIMARY)         │  │   Provider   │ │   Provider   │     │
-│  │                     │  │              │  │              │     │
-│  │ client-go           │  │ PromQL HTTP  │  │ LogsQL HTTP  │     │
-│  │                     │  │              │  │ (fallback    │     │
-│  │ Pod status +        │  │ Restart rate │  │  for logs)   │     │
-│  │   conditions        │  │ CPU/Memory   │  │              │     │
-│  │ Container state     │  │ Error rate   │  │ Container    │     │
-│  │   + image + envErrs │  │              │  │ logs         │     │
-│  │ Init containers     │  │              │  │ Error        │     │
-│  │ Current + previous  │  │              │  │ patterns     │     │
-│  │   logs (K8s API)    │  │              │  │              │     │
-│  │ Events timeline     │  │              │  │              │     │
-│  │ Owner chain         │  │              │  │              │     │
-│  │ Rollout status      │  │              │  │              │     │
-│  │ Resources req/limit │  │              │  │              │     │
-│  │ Node resources      │  │              │  │              │     │
-│  └────────┬────────────┘  └──────┬───────┘  └──────┬───────┘     │
-│           │                      │                  │            │
-│           ▼                      ▼                  ▼            │
-│         K8s API           VictoriaMetrics     VictoriaLogs       │
-│       (primary)           (localhost:8428)    (localhost:9428)   │
-│                                               (fallback only)    │
-└──────────────────────────────────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    Evidence Bundle                                │
-│                                                                  │
-│  Normalized struct containing all collected data:                │
-│  • K8sFacts:                                                     │
-│      PodStatuses (phase, conditions, containers, init, logs)     │
-│      Events (warning timeline)                                   │
-│      OwnerChain (Pod → RS → Deploy)                              │
-│      RolloutStatus, ResourceRequests, NodeResources              │
-│  • LogsFacts (VictoriaLogs — lines, error count, top patterns)   │
-│  • MetricsFacts (CPU, memory, restart rate)                      │
-│  • ProviderStatuses (which sources succeeded/failed)             │
-│                                                                  │
-│  File: internal/domain/types.go                                  │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│             Evidence-First Analyzer (Static Analysis)             │
-│                                                                  │
-│  5-step analysis reading structured K8s facts directly:          │
-│                                                                  │
-│  1. Container state → OOM? ImagePull? CrashLoop? Pending?       │
-│  2. Events → FailedScheduling? Probe failed? Image error?       │
-│  3. Logs → K8s API logs (current+previous), then VictoriaLogs   │
-│  4. Metrics → memory near limit? high restart rate?             │
-│  5. Correlate → multiple sources agreeing = boost confidence    │
-│                                                                  │
-│  Each step produces a "finding" with ID, score, and signals.    │
-│  Correlation: if multiple sources agree on same root cause ID,  │
-│  score is boosted (+15 per additional source, capped at max).   │
-│                                                                  │
-│  File: internal/diagnosis/analyzer.go                            │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                   Command Composer                                │
-│                                                                  │
-│  Generates kubectl commands based on:                            │
-│  • Intent (crashloop → logs/describe, rollout → rollback)       │
-│  • Primary hypothesis (OOM → check resources, probe → probe)    │
-│  • Target (namespace, resource kind, name)                      │
-│                                                                  │
-│  File: internal/composer/composer.go                             │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                   Diagnosis Result                                │
-│                                                                  │
-│  {                                                               │
-│    summary:               "Container OOMKilled. Memory limit:    │
-│                            128Mi. Restarted 14 times."           │
-│    confidence:            "High"                                 │
-│    primary_hypothesis:    { name, score, signals }               │
-│    supporting_evidence:   ["Owner: Pod/x → RS/y → Deploy/z",    │
-│                            "Container checkout [img:v2]: ...",   │
-│                            "Log [previous]: OutOfMemoryError"]   │
-│    notes:                 ["No metrics — diagnosis based on      │
-│                            K8s status and events only."]         │
-│  }                                                               │
-│                                                                  │
-│  File: internal/domain/types.go (DiagnosisResult)                │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                  Telegram Adapter (output)                        │
-│                                                                  │
-│  Formats DiagnosisResult into HTML message:                      │
-│  Callback results are sent as native Telegram reply to the       │
-│  alert notification message.                                     │
-│                                                                  │
-│  [🤖 AI Investigation] [📜 Logs]  ← post-diagnosis buttons     │
-└──────────────────────────────────────────────────────────────────┘
-```
+
+### Provider Details
+
+| Provider | Source | Data Collected |
+|---|---|---|
+| **K8s** (primary) | client-go → K8s API | Pod status, conditions, container state + image + env errors, init containers, current + previous logs, events, owner chain, rollout status, resource requests/limits, node resources |
+| **Metrics** | PromQL → VictoriaMetrics | Restart rate, CPU/memory usage + limits |
+| **Logs** (fallback) | LogsQL → VictoriaLogs | Container logs, error patterns (used when K8s API logs are empty) |
+
+### Evidence Bundle → Analyzer (5-step)
+
+| Step | Reads | Detects |
+|---|---|---|
+| 1. Container state | `ContainerStatus.State/Reason/ExitCode` | OOM, ImagePull, CrashLoop, Pending, init fail |
+| 2. Events | `K8sEvent.Reason/Message` | FailedScheduling (taints, affinity, PVC, resources), probe failures, image errors |
+| 3. Logs | K8s API logs (current + previous) | Config errors, connectivity issues, OOM, permission errors |
+| 4. Metrics | CPU/memory usage vs limits, restart rate | Resource exhaustion, high restart rate |
+| 5. Correlate | All findings | Multiple sources agreeing → boost confidence (+15 per source) |
 
 ## Module Responsibilities
 
@@ -169,7 +76,7 @@ The bot does not pattern-match text strings or let an LLM decide what to query. 
 | **Webhook Server** | `internal/webhook/server.go` | HTTP server for Alertmanager webhooks, parse alerts, extract targets |
 | **Alert Notification** | `internal/adapter/telegram/alerts.go` | Format alert messages, build action button keyboards, send notifications (no auto-diagnosis) |
 | **Callback Handlers** | `internal/adapter/telegram/callbacks.go` | Handle inline button presses: AI Investigation, Static Analysis, Logs. Results reply to alert message |
-| **Telegram Bot** | `internal/adapter/telegram/bot.go` | Message parsing, /check with fuzzy search fallback, /scan dispatch, progress updates |
+| **Telegram Bot** | `internal/adapter/telegram/bot.go` | Message parsing (/check, /deploy, /scan), fuzzy search fallback, per-user rate limiting, progress updates |
 | **K8s Scanner** | `internal/provider/kubernetes/scanner.go` | Namespace scanning (all non-system or specific), fuzzy pod search by name/owner/label |
 | **Intent Classifier** | `internal/domain/intent.go` | Classify user message into crashloop/pending/rollout/unknown |
 | **Target Resolver** | `internal/resolver/resolver.go` | Map user input to concrete K8s resource via exact match or fuzzy search |

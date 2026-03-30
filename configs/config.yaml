@@ -2,6 +2,9 @@ telegram:
   token: "" # Set via TELEGRAM_BOT_TOKEN env var
   allowed_chat_ids: [] # Empty = allow all
   alert_chat_ids: []   # Set via TELEGRAM_CHAT_ID env var (comma-separated). Get your chat ID from @userinfobot
+  rate_limit:
+    max_requests: 10   # max requests per user per window
+    window_secs: 60    # window duration in seconds
 
 # Alertmanager webhook receiver
 webhook:

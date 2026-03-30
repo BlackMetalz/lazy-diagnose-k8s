@@ -29,14 +29,42 @@ go test ./internal/diagnosis/ -v -run TestEngineName
 Entry point: `cmd/bot/main.go` — wires all components and starts Telegram polling + webhook HTTP server.
 
 **Request flow:**
-```
-Alert/Command → Intent Classifier (domain) → Target Resolver → Provider (collect evidence)
-             → Playbook Engine (score hypotheses) → Diagnosis Engine (analyze + optional LLM) → Telegram response
+
+```mermaid
+flowchart TD
+    A1["/check, /deploy<br>Telegram command"] --> B[Parse command<br>adapter.ParseMessage]
+    A2["Alertmanager<br>webhook :8080"] --> W[Extract target<br>webhook.ExtractTargets]
+    W --> N["Send alert notification<br>+ action buttons"]
+    N --> CB["User clicks button<br>🤖 AI | 📊 Static | 📜 Logs"]
+
+    B --> RL{Rate limit?}
+    CB --> RL
+    RL -- exceeded --> DENY["⏳ Try again shortly"]
+    RL -- ok --> R[Resolve target<br>resolver.Resolve]
+
+    R --> C["Collect evidence<br>provider.Collector"]
+    C --> K8S["K8s API<br>pods, events, logs"]
+    C --> VM["VictoriaMetrics<br>CPU, memory, restarts"]
+    C --> VL["VictoriaLogs<br>container logs"]
+
+    C --> D{Action?}
+    D -- "📊 Static /<br>/check / /deploy" --> SA["Analyze evidence<br>diagnosis.Analyzer"]
+    D -- "🤖 AI" --> LLM["LLM summarize<br>diagnosis.Summarizer"]
+    D -- "📜 Logs" --> LOGS["Show raw logs"]
+
+    SA --> OUT["Telegram reply<br>+ follow-up buttons"]
+    LLM --> OUT
+    LOGS --> OUT
+
+    A3["/scan"] --> RL2{Rate limit?}
+    RL2 -- ok --> SC["Scan namespace<br>kubernetes.Scanner"]
+    RL2 -- exceeded --> DENY
+    SC --> SOUT["List unhealthy pods"]
 ```
 
 **Key packages under `internal/`:**
 
-- **adapter/telegram/** — Telegram bot integration: command handling, callback buttons, message formatting, alert notifications. `bot.go` is the main bot struct, `callbacks.go` handles inline button presses, `alerts.go` formats alert messages.
+- **adapter/telegram/** — Telegram bot integration: command handling (`/check`, `/deploy`, `/scan`), callback buttons, message formatting, alert notifications. `bot.go` is the main bot struct, `callbacks.go` handles inline button presses, `alerts.go` formats alert messages. Includes per-user rate limiting (sliding window).
 - **webhook/** — HTTP server receiving Alertmanager webhooks. Parses alert payload, extracts K8s target, calls bot's `HandleAlert`.
 - **domain/** — Core types (`Evidence`, `DiagnosisResult`, `Target`) and intent classifier that parses user commands into structured intents.
 - **resolver/** — Resolves fuzzy target names to actual K8s resources via pod search. No service map — uses fuzzy matching directly.

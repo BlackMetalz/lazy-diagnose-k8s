@@ -4,14 +4,18 @@ Telegram ChatOps bot for Kubernetes diagnosis. Receives alerts from Alertmanager
 
 ## How It Works
 
-```
-Alertmanager ──webhook──→ Bot :8080 ──→ Telegram: alert notification
-                                         [🤖 AI] [📊 Static] [📜 Logs]
-                                              ↓ user clicks
-                                         Bot runs investigation → result
+```mermaid
+flowchart LR
+    AM["Alertmanager"] -- webhook --> BOT["Bot :8080"]
+    USER["User"] -- "/check /deploy" --> BOT
+    USER -- "/scan" --> SCAN["Scan namespace"]
 
-User ──────── /check ───→ Bot → static analysis → result + [🤖 AI] [📊 Static] [📜 Logs] [🔍 Scan]
-User ──────── /scan ────→ Bot → find unhealthy pods → list
+    BOT -- alert --> TG1["Telegram notification<br>🤖 AI | 📊 Static | 📜 Logs"]
+    BOT -- command --> DIAG["Collect evidence → Analyze"]
+
+    TG1 -- "user clicks" --> DIAG
+    DIAG --> TG2["Result + follow-up buttons"]
+    SCAN --> TG3["Unhealthy pod list"]
 ```
 
 - **Alert mode**: Alertmanager fires → bot sends notification → user clicks action button → investigation runs
@@ -29,11 +33,9 @@ make run
 
 | Command | Description |
 |---|---|
-| `/scan [namespace]` | Find all unhealthy pods in a namespace |
-| `/check <target> [-n ns]` | Diagnose a specific target |
-| `/diag <target> <context>` | Diagnose with description |
-| `/pod <pod-name>` | Check a specific pod |
-| `/deploy <deployment>` | Check rollout status |
+| `/check <target> [-n ns] [-c cluster]` | Diagnose a specific target |
+| `/deploy <deployment> [-c cluster]` | Check rollout status |
+| `/scan [namespace] [-c cluster]` | Find all unhealthy pods in a namespace |
 | `/help` | Show usage guide |
 
 **Target** can be a pod/deployment name, or a path like `deployment/checkout` or `prod/deployment/checkout`. The bot auto-discovers the namespace via fuzzy pod search.
@@ -42,12 +44,12 @@ make run
 
 **Examples:**
 ```
-/scan                          # scan default namespace
-/scan prod                     # scan specific namespace
 /check checkout                # diagnose checkout in default ns
 /check checkout -n staging     # diagnose in staging
-/diag payment just deployed, seeing 5xx
-/deploy payment
+/check checkout -c lazy-diag-2 # diagnose on cluster 2
+/deploy payment                # check rollout status
+/scan                          # scan default namespace
+/scan prod                     # scan specific namespace
 ```
 
 ## Playbooks

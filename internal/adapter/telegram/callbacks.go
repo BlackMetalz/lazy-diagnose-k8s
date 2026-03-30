@@ -40,6 +40,13 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	// Acknowledge the callback immediately
 	b.api.Send(tgbotapi.NewCallback(cb.ID, ""))
 
+	// Rate limit check
+	if !b.limiter.allow(cb.From.ID) {
+		b.logger.Warn("rate limited callback", "user_id", cb.From.ID, "user", cb.From.UserName)
+		b.api.Send(tgbotapi.NewCallback(cb.ID, "Rate limited, try again shortly"))
+		return
+	}
+
 	action, cluster, ns, name := parseCallbackData(data)
 
 	// Dedup: skip if same operation is already in-flight for this chat
@@ -118,17 +125,17 @@ func (b *Bot) handleAIInvestigation(ctx context.Context, chatID int64, replyTo i
 		if err != nil {
 			b.logger.Warn("AI investigation failed", "error", err)
 			text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ LLM unavailable: %s\n\nUse 📊 Static Analysis instead.", esc(err.Error()))
-			keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
+			keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai")
 			b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 			return
 		}
 
 		text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n%s", esc(summary))
-		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
+		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai")
 		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 	} else {
 		text := "🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ LLM not configured.\n\nSet <code>llm.enabled: true</code> in config.yaml or use 📊 Static Analysis."
-		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
+		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai")
 		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 	}
 }
@@ -161,7 +168,7 @@ func (b *Bot) handleStaticAnalysis(ctx context.Context, chatID int64, replyTo in
 
 	result := cluster.Engine.RunWithoutLLM(ctx, req, progress)
 	formatted := FormatResultCompact(result)
-	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "static")
 
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, formatted, keyboard)
@@ -218,7 +225,7 @@ func (b *Bot) handleShowLogs(ctx context.Context, chatID int64, replyTo int, clu
 			esc(target.Kind), esc(target.ResourceName), esc(ns))
 	}
 
-	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name)
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "logs")
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 	} else {

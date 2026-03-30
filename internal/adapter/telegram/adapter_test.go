@@ -11,8 +11,8 @@ func TestParseMessage_SlashCommand(t *testing.T) {
 		target  string
 	}{
 		{"/check checkout", "check", "checkout"},
-		{"/diag payment vừa deploy xong", "diag", "payment"},
-		{"/pod payment-api-7f8b9c-x4k2p", "pod", "payment-api-7f8b9c-x4k2p"},
+		{"/check checkout -n staging", "check", "checkout"},
+		{"/check checkout -c lazy-diag-2", "check", "checkout"},
 		{"/deploy checkout", "deploy", "checkout"},
 		{"/help", "help", ""},
 		{"/start", "start", ""},

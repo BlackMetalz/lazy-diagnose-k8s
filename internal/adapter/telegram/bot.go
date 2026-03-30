@@ -23,6 +23,73 @@ type ClusterEntry struct {
 	Scanner *k8sprovider.Provider
 }
 
+// rateLimiter tracks per-user request timestamps using a sliding window.
+type rateLimiter struct {
+	mu          sync.Mutex
+	requests    map[int64][]time.Time // userID → timestamps
+	maxRequests int
+	window      time.Duration
+}
+
+func newRateLimiter(maxRequests int, window time.Duration) *rateLimiter {
+	if maxRequests <= 0 {
+		maxRequests = 10
+	}
+	if window <= 0 {
+		window = 60 * time.Second
+	}
+	return &rateLimiter{
+		requests:    make(map[int64][]time.Time),
+		maxRequests: maxRequests,
+		window:      window,
+	}
+}
+
+// allow checks if userID is within rate limit. Returns true if allowed.
+func (r *rateLimiter) allow(userID int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-r.window)
+
+	// Remove expired entries
+	timestamps := r.requests[userID]
+	valid := timestamps[:0]
+	for _, t := range timestamps {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= r.maxRequests {
+		r.requests[userID] = valid
+		return false
+	}
+
+	r.requests[userID] = append(valid, now)
+	return true
+}
+
+// remaining returns how many requests the user has left in the current window.
+func (r *rateLimiter) remaining(userID int64) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	cutoff := time.Now().Add(-r.window)
+	count := 0
+	for _, t := range r.requests[userID] {
+		if t.After(cutoff) {
+			count++
+		}
+	}
+	rem := r.maxRequests - count
+	if rem < 0 {
+		return 0
+	}
+	return rem
+}
+
 // Bot is the Telegram bot that handles diagnosis requests.
 type Bot struct {
 	api              *tgbotapi.BotAPI
@@ -35,11 +102,18 @@ type Bot struct {
 	allowedChatIDs   map[int64]bool
 	alertChatIDs     []int64 // chats to receive alert notifications
 	inflight         sync.Map // tracks in-flight callback operations (key: "action:ns:name")
+	limiter          *rateLimiter
+}
+
+// RateLimitOpts configures the per-user rate limiter.
+type RateLimitOpts struct {
+	MaxRequests int
+	WindowSecs  int
 }
 
 // NewBot creates a new Telegram bot.
 // For single-cluster backwards compatibility, pass engine/scanner and leave clusters nil.
-func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, alertChatIDs []int64, alertFmt webhook.AlertFormatConfig, logger *slog.Logger) (*Bot, error) {
+func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, alertChatIDs []int64, alertFmt webhook.AlertFormatConfig, rl RateLimitOpts, logger *slog.Logger) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("create telegram bot: %w", err)
@@ -71,6 +145,7 @@ func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, 
 		logger:           logger,
 		allowedChatIDs:   allowed,
 		alertChatIDs:     alertChatIDs,
+		limiter:          newRateLimiter(rl.MaxRequests, time.Duration(rl.WindowSecs)*time.Second),
 	}, nil
 }
 
@@ -154,13 +229,28 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 	parsed := ParseMessage(msg.Text)
 
-	// Handle special commands
+	// Handle special commands (no rate limit for help)
 	switch parsed.Command {
 	case "start", "help":
 		b.sendMessage(chatID, FormatHelpMessage())
 		return
 	case "scan":
+		if !b.limiter.allow(msg.From.ID) {
+			b.logger.Warn("rate limited", "user_id", msg.From.ID, "user", msg.From.UserName, "command", "scan")
+			b.sendMessage(chatID, fmt.Sprintf("⏳ Rate limit: max %d requests per %s. Try again shortly.",
+				b.limiter.maxRequests, b.limiter.window.Round(time.Second)))
+			return
+		}
 		go b.handleScan(ctx, chatID, parsed)
+		return
+	}
+
+	// Rate limit check (after help, before heavy operations)
+	userID := msg.From.ID
+	if !b.limiter.allow(userID) {
+		b.logger.Warn("rate limited", "user_id", userID, "user", msg.From.UserName, "chat_id", chatID)
+		b.sendMessage(chatID, fmt.Sprintf("⏳ Rate limit: max %d requests per %s. Try again shortly.",
+			b.limiter.maxRequests, b.limiter.window.Round(time.Second)))
 		return
 	}
 
@@ -211,13 +301,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	intent := domain.ClassifyIntent(parsed.RawText)
 
 	// Override intent based on command
-	switch parsed.Command {
-	case "deploy":
+	if parsed.Command == "deploy" {
 		intent = domain.IntentRolloutRegression
-	case "pod":
-		if intent == domain.IntentUnknown {
-			intent = domain.IntentCrashLoop
-		}
 	}
 
 	// Create request
@@ -246,7 +331,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 	// Send final result with action buttons
 	formatted := FormatResult(result)
-	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, target.ResourceName)
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, target.ResourceName, "static")
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, formatted, keyboard)
 	} else {
