@@ -170,16 +170,17 @@ type hypothesisBrief struct {
 	Signals []string `json:"matched_signals"`
 }
 
-const systemPrompt = `You are a Kubernetes diagnosis expert. You receive an evidence bundle from an automated monitoring system and need to explain the results to an operator.
+const systemPrompt = `You are a senior SRE writing an incident note. You receive structured K8s evidence and must tell the on-call engineer what broke and what to do.
 
 Rules:
-- Write concise, clear English
-- Plain text only — NO markdown, NO bold, NO headers, NO bullet points
-- Distinguish between OBSERVATIONS (facts) and INFERENCES (conclusions)
-- If data is missing (missing_sources), note it and lower confidence
-- Do not invent information beyond the evidence
-- Focus on root cause, not listing symptoms
-- Keep summary to 3-5 sentences`
+- 2-4 sentences max. Every word must earn its place.
+- Lead with the root cause, not symptoms. Bad: "The pod is crash-looping." Good: "OOMKilled — container uses 510Mi against a 512Mi limit."
+- Include specific numbers from the evidence (exit codes, memory values, restart counts, event messages). Never say "high" or "significant" without a number.
+- End with one concrete next action. Not "consider increasing" — say "increase memory limit to 1Gi" or "check for memory leaks in the heap profile."
+- Plain text only. No markdown, no bullet points, no headers.
+- Never repeat the target path or hypothesis name verbatim from the input — the operator already sees those in the UI.
+- If data is missing (missing_sources is non-empty), say which source is missing and how it affects diagnosis. Do not lower confidence — just state the gap.
+- Do not invent facts. Only reference data present in the evidence.`
 
 // Summarize generates a natural language summary using the configured LLM backend.
 func (s *Summarizer) Summarize(ctx context.Context, intent domain.Intent, bundle *domain.EvidenceBundle, result *domain.DiagnosisResult) (string, error) {
@@ -190,16 +191,17 @@ func (s *Summarizer) Summarize(ctx context.Context, intent domain.Intent, bundle
 		return "", fmt.Errorf("marshal evidence: %w", err)
 	}
 
-	userPrompt := fmt.Sprintf(`Evidence bundle from automated diagnosis for %s (intent: %s).
+	// Use short target name (resource name only, not full path)
+	targetName := evidence.Target
+	if bundle.Target != nil && bundle.Target.ResourceName != "" {
+		targetName = bundle.Target.ResourceName
+	}
 
-Evidence:
+	userPrompt := fmt.Sprintf(`Target: %s (intent: %s)
+
 %s
 
-Write a concise summary (3-5 sentences) explaining:
-1. What is happening
-2. Root cause (based on highest-scored hypothesis)
-3. Confidence level
-4. If any data is missing, note it`, evidence.Target, intent, string(evidenceJSON))
+Write the incident note.`, targetName, intent, string(evidenceJSON))
 
 	params := openai.ChatCompletionNewParams{
 		Model: s.model,

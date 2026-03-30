@@ -37,15 +37,15 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 	b.logger.Info("callback received", "chat_id", chatID, "data", data, "user", cb.From.UserName)
 
-	// Acknowledge the callback immediately
-	b.api.Send(tgbotapi.NewCallback(cb.ID, ""))
-
-	// Rate limit check
+	// Rate limit check (before ack so we can show the toast)
 	if !b.limiter.allow(cb.From.ID) {
 		b.logger.Warn("rate limited callback", "user_id", cb.From.ID, "user", cb.From.UserName)
 		b.api.Send(tgbotapi.NewCallback(cb.ID, "Rate limited, try again shortly"))
 		return
 	}
+
+	// Acknowledge the callback
+	b.api.Send(tgbotapi.NewCallback(cb.ID, ""))
 
 	action, cluster, ns, name := parseCallbackData(data)
 

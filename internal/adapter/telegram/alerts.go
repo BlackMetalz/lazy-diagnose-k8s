@@ -3,10 +3,8 @@ package telegram
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/lazy-diagnose-k8s/internal/domain"
 	"github.com/lazy-diagnose-k8s/internal/webhook"
 )
 
@@ -93,30 +91,3 @@ func buildPostDiagnosisKeyboard(cluster, ns, resource, completedAction string) t
 	)
 }
 
-func classifyAlertIntent(alertName string) domain.Intent {
-	intent := domain.ClassifyIntent(alertName)
-	if intent != domain.IntentUnknown {
-		return intent
-	}
-
-	switch {
-	case containsAny(alertName, "CrashLoopBackOff", "OOMKilled", "PodCrash", "ContainerRestart", "KubePodCrashLooping"):
-		return domain.IntentCrashLoop
-	case containsAny(alertName, "Pending", "Unschedulable", "FailedScheduling", "KubePodNotReady"):
-		return domain.IntentPending
-	case containsAny(alertName, "Rollout", "Deploy", "Revision", "KubeDeploymentReplicasMismatch"):
-		return domain.IntentRolloutRegression
-	default:
-		return domain.IntentCrashLoop
-	}
-}
-
-func containsAny(s string, substrs ...string) bool {
-	lower := strings.ToLower(s)
-	for _, sub := range substrs {
-		if strings.Contains(lower, strings.ToLower(sub)) {
-			return true
-		}
-	}
-	return false
-}

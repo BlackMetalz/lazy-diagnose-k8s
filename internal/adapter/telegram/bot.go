@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/lazy-diagnose-k8s/internal/config"
 	"github.com/lazy-diagnose-k8s/internal/domain"
 	"github.com/lazy-diagnose-k8s/internal/playbook"
 	k8sprovider "github.com/lazy-diagnose-k8s/internal/provider/kubernetes"
@@ -62,6 +63,10 @@ func (r *rateLimiter) allow(userID int64) bool {
 		}
 	}
 
+	if len(valid) == 0 {
+		delete(r.requests, userID)
+	}
+
 	if len(valid) >= r.maxRequests {
 		r.requests[userID] = valid
 		return false
@@ -71,23 +76,10 @@ func (r *rateLimiter) allow(userID int64) bool {
 	return true
 }
 
-// remaining returns how many requests the user has left in the current window.
-func (r *rateLimiter) remaining(userID int64) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	cutoff := time.Now().Add(-r.window)
-	count := 0
-	for _, t := range r.requests[userID] {
-		if t.After(cutoff) {
-			count++
-		}
-	}
-	rem := r.maxRequests - count
-	if rem < 0 {
-		return 0
-	}
-	return rem
+// denyMessage returns the user-facing rate limit message.
+func (r *rateLimiter) denyMessage() string {
+	return fmt.Sprintf("⏳ Rate limit: max %d requests per %s. Try again shortly.",
+		r.maxRequests, r.window.Round(time.Second))
 }
 
 // Bot is the Telegram bot that handles diagnosis requests.
@@ -105,15 +97,9 @@ type Bot struct {
 	limiter          *rateLimiter
 }
 
-// RateLimitOpts configures the per-user rate limiter.
-type RateLimitOpts struct {
-	MaxRequests int
-	WindowSecs  int
-}
-
 // NewBot creates a new Telegram bot.
 // For single-cluster backwards compatibility, pass engine/scanner and leave clusters nil.
-func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, alertChatIDs []int64, alertFmt webhook.AlertFormatConfig, rl RateLimitOpts, logger *slog.Logger) (*Bot, error) {
+func NewBot(token string, engine *playbook.Engine, resolver *resolver.Resolver, scanner *k8sprovider.Provider, defaultNs string, allowedChatIDs []int64, alertChatIDs []int64, alertFmt webhook.AlertFormatConfig, rl config.RateLimitConfig, logger *slog.Logger) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("create telegram bot: %w", err)
@@ -237,8 +223,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	case "scan":
 		if !b.limiter.allow(msg.From.ID) {
 			b.logger.Warn("rate limited", "user_id", msg.From.ID, "user", msg.From.UserName, "command", "scan")
-			b.sendMessage(chatID, fmt.Sprintf("⏳ Rate limit: max %d requests per %s. Try again shortly.",
-				b.limiter.maxRequests, b.limiter.window.Round(time.Second)))
+			b.sendMessage(chatID, b.limiter.denyMessage())
 			return
 		}
 		go b.handleScan(ctx, chatID, parsed)
