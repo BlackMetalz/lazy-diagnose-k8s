@@ -145,6 +145,10 @@ make scenarios-status
 Alertmanager was already deployed by `make ubuntu-monitoring`. Verify alerts fire after workloads are unhealthy:
 
 ```bash
+# Check Alertmanager
+kubectl -n monitoring port-forward svc/alertmanager 9093:9093 &
+curl -s http://localhost:9093/api/v2/alerts | jq '.[].labels.alertname'
+
 # Wait ~2 min for alert rules to trigger
 curl -s 'http://localhost:8428/api/v1/query' \
   --data-urlencode 'query=ALERTS{alertstate="firing"}' | jq '.data.result[] | {alertname: .metric.alertname, pod: .metric.pod}'

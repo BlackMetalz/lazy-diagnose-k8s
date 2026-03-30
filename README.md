@@ -123,7 +123,7 @@ Optional LLM-powered summaries. Without it, the bot uses template-based summarie
 ```yaml
 llm:
   enabled: true
-  backend: ollama          # ollama | gemini | openrouter | openai | custom
+  backend: ollama          # ollama | gemini | openrouter | openai | fpt | custom
   model: gemma3:4b         # auto-set per backend if empty
   # api_key: your-key      # not needed for ollama
 ```
@@ -133,6 +133,7 @@ llm:
 | **Ollama** | Free (local) | `gemma3:4b` |
 | **Gemini** | Free tier (15 RPM) | `gemini-2.0-flash` |
 | **OpenRouter** | Free models available | `meta-llama/llama-3.3-70b-instruct:free` |
+| **FPT AI** | Free tier available | `Qwen2.5-Coder-32B-Instruct` |
 | **OpenAI** | Paid | `gpt-4o-mini` |
 
 See [full LLM setup guide](#llm-backend-details) below.
@@ -262,6 +263,17 @@ llm:
 ```
 
 Other free models: `google/gemma-3-27b-it:free`, `nvidia/nemotron-3-super-120b-a12b:free`, `openrouter/free` (auto-select). Full list: https://openrouter.ai/collections/free-models
+
+### FPT AI Marketplace (Vietnamese cloud)
+
+Get API key at https://marketplace.fptcloud.com/ (My Account → My API Keys)
+```yaml
+llm:
+  enabled: true
+  backend: fpt
+  api_key: your-fpt-key
+  model: Qwen2.5-Coder-32B-Instruct
+```
 
 ### Custom endpoint
 

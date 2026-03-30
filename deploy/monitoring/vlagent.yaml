@@ -49,7 +49,7 @@ spec:
           args:
             - "-kubernetesCollector"
             - "-remoteWrite.url=http://host.docker.internal:9428/insert/native"
-            - "-remoteWrite.label=cluster=lazy-diag"
+            - '-kubernetesCollector.extraFields={"cluster":"lazy-diag"}'
           volumeMounts:
             - name: varlog
               mountPath: /var/log

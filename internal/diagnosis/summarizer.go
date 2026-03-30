@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -99,6 +100,13 @@ func resolveBackend(cfg SummarizerConfig) (baseURL, model string) {
 		}
 		if model == "" {
 			model = "claude-haiku-4-5"
+		}
+	case "fpt":
+		if baseURL == "" {
+			baseURL = "https://mkp-api.fptcloud.com"
+		}
+		if model == "" {
+			model = "DeepSeek-R1-Distill-Llama-70B"
 		}
 	default:
 		// Custom endpoint — user provides everything
@@ -204,6 +212,9 @@ Write a concise summary (3-5 sentences) explaining:
 	}
 
 	// Retry with backoff for rate limiting (429)
+	start := time.Now()
+	slog.Info("LLM request", "backend", s.backend, "model", s.model, "target", evidence.Target)
+
 	var resp *openai.ChatCompletion
 	var lastErr error
 	for attempt := range 3 {
@@ -214,6 +225,7 @@ Write a concise summary (3-5 sentences) explaining:
 		if !strings.Contains(lastErr.Error(), "429") {
 			break // non-retryable error
 		}
+		slog.Warn("LLM rate limited, retrying", "attempt", attempt+1, "backend", s.backend)
 		wait := time.Duration(2<<attempt) * time.Second // 2s, 4s, 8s
 		select {
 		case <-ctx.Done():
@@ -222,12 +234,16 @@ Write a concise summary (3-5 sentences) explaining:
 		}
 	}
 	if lastErr != nil {
+		slog.Error("LLM request failed", "backend", s.backend, "model", s.model, "error", lastErr, "duration", time.Since(start))
 		return "", fmt.Errorf("LLM API (%s): %w", s.model, lastErr)
 	}
 
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("LLM returned no choices")
 	}
+
+	tokens := int(resp.Usage.TotalTokens)
+	slog.Info("LLM response", "backend", s.backend, "model", s.model, "tokens", tokens, "duration", time.Since(start).Round(time.Millisecond))
 
 	text := strings.TrimSpace(resp.Choices[0].Message.Content)
 	return stripMarkdown(text), nil

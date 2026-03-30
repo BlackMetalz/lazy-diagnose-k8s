@@ -148,13 +148,19 @@ func main() {
 			Logs:    logsprovider.New(vlURL),
 		}
 
+		// Use webhook.cluster_name as cluster key so alert callbacks match
+		clusterName := cfg.Webhook.ClusterName
+		if clusterName == "" {
+			clusterName = "default"
+		}
+
 		engine := playbook.New(collector, summarizer, logger)
-		clusters["default"] = &telegram.ClusterEntry{
-			Name:    "default",
+		clusters[clusterName] = &telegram.ClusterEntry{
+			Name:    clusterName,
 			Engine:  engine,
 			Scanner: firstK8s,
 		}
-		defaultCluster = "default"
+		defaultCluster = clusterName
 	}
 
 	// Create Telegram bot (single-cluster compat via first cluster)

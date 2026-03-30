@@ -61,6 +61,12 @@ llm:
   # api_key: your-openai-key
   # model: gpt-4o-mini
 
+  ## FPT AI Marketplace (Vietnamese cloud, free tier available)
+  # backend: fpt
+  # api_key: your-fpt-api-key
+  # model: DeepSeek-R1-Distill-Llama-70B
+  ## Other models: Llama-3.3-70B-Instruct, Qwen2.5-Coder-32B-Instruct, QwQ-32B, DeepSeek-R1
+
   ## Custom (any OpenAI-compatible endpoint)
   # backend: custom
   # base_url: http://your-server:8080/v1
