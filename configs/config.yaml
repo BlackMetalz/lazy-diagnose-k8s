@@ -76,6 +76,20 @@ llm:
   # model: your-model
   # api_key: your-key
 
+# HolmesGPT deep investigation (optional — agentic root cause analysis)
+# Requires 'holmes' CLI installed (pip install holmesgpt)
+# Model MUST support function calling (tool use)
+# holmes:
+#   enabled: true
+#   model: openai/SaoLa3.1-medium               # must be "openai/<model>" format, must support tool calling
+#   base_url: https://mkp-api.fptcloud.com       # OpenAI-compatible endpoint
+#   api_key: your-key                             # shares LLM api_key if not set
+#   timeout: 120                                  # seconds
+## Models tested with FPT AI:
+##   openai/SaoLa3.1-medium          — function calling OK
+##   openai/SaoLa-Llama3.1-planner   — function calling OK
+##   openai/Qwen2.5-Coder-32B-Instruct — NO function calling (text only)
+
 mcp:
   kubernetes:
     command: "npx"

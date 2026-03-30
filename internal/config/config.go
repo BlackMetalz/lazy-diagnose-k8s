@@ -12,11 +12,21 @@ type Config struct {
 	Telegram   TelegramConfig   `yaml:"telegram"`
 	Webhook    WebhookConfig    `yaml:"webhook"`
 	LLM        LLMConfig        `yaml:"llm"`
+	Holmes     HolmesConfig     `yaml:"holmes"`
 	MCP        MCPConfig        `yaml:"mcp"`
 	Providers  ProvidersConfig  `yaml:"providers"`
 	Clusters   []ClusterConfig  `yaml:"clusters"`
 	Playbooks  PlaybookRules    `yaml:"playbooks"`
 	Redaction  RedactionRules   `yaml:"redaction"`
+}
+
+// HolmesConfig configures the HolmesGPT deep investigation integration.
+type HolmesConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Model   string `yaml:"model"`    // e.g. "openai/Qwen2.5-Coder-32B-Instruct"
+	BaseURL string `yaml:"base_url"` // OpenAI-compatible endpoint
+	APIKey  string `yaml:"api_key"`
+	Timeout int    `yaml:"timeout"`  // seconds, default 120
 }
 
 // ClusterConfig defines a Kubernetes cluster connection.

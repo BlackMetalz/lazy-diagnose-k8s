@@ -22,6 +22,10 @@ clean:
 docker-build:
 	docker build -t $(IMAGE) .
 
+# Run Docker container locally
+docker-run: docker-build
+	docker run --rm --net=host -v $(HOME)/.kube/config:/root/.kube/config:ro -e TELEGRAM_BOT_TOKEN -e TELEGRAM_CHAT_ID -e LLM_BACKEND -e LLM_API_KEY -e LLM_MODEL -e HOLMES_MODEL -e HOLMES_BASE_URL -e HOLMES_API_KEY -e CONFIG_PATH=/etc/lazy-diagnose-k8s/config.yaml $(IMAGE)
+
 # Load image into kind cluster
 docker-load: docker-build
 	kind load docker-image $(IMAGE) --name lazy-diag

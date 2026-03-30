@@ -106,7 +106,7 @@ func resolveBackend(cfg SummarizerConfig) (baseURL, model string) {
 			baseURL = "https://mkp-api.fptcloud.com"
 		}
 		if model == "" {
-			model = "DeepSeek-R1-Distill-Llama-70B"
+			model = "Qwen2.5-Coder-32B-Instruct"
 		}
 	default:
 		// Custom endpoint — user provides everything

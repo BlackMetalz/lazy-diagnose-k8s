@@ -13,6 +13,7 @@ import (
 	"github.com/lazy-diagnose-k8s/internal/adapter/telegram"
 	"github.com/lazy-diagnose-k8s/internal/config"
 	"github.com/lazy-diagnose-k8s/internal/diagnosis"
+	"github.com/lazy-diagnose-k8s/internal/holmes"
 	"github.com/lazy-diagnose-k8s/internal/playbook"
 	"github.com/lazy-diagnose-k8s/internal/provider"
 	k8sprovider "github.com/lazy-diagnose-k8s/internal/provider/kubernetes"
@@ -187,6 +188,21 @@ func main() {
 
 	// Register all clusters (overrides the single "default" entry from NewBot)
 	bot.SetClusters(clusters, defaultCluster)
+
+	// HolmesGPT deep investigation (optional)
+	holmesCfg := resolveHolmesConfig(cfg)
+	if holmesCfg.Enabled {
+		if holmes.Available() {
+			h := holmes.New(holmesCfg)
+			for _, entry := range clusters {
+				entry.Engine.SetHolmes(h)
+			}
+			logger.Info("HolmesGPT enabled", "model", holmesCfg.Model)
+		} else {
+			logger.Warn("HolmesGPT enabled in config but 'holmes' CLI not found in PATH")
+		}
+	}
+
 	logger.Info("bot configured", "clusters", len(clusters), "default", defaultCluster)
 
 	// Graceful shutdown
@@ -267,6 +283,39 @@ func resolveLLMConfig(cfg *config.Config) config.LLMConfig {
 	}
 	// backend set → implicitly enabled
 	if result.Backend != "" {
+		result.Enabled = true
+	}
+
+	return result
+}
+
+// resolveHolmesConfig merges config file + env var overrides for HolmesGPT.
+func resolveHolmesConfig(cfg *config.Config) config.HolmesConfig {
+	result := cfg.Holmes
+
+	if v := os.Getenv("HOLMES_MODEL"); v != "" {
+		result.Model = v
+	}
+	if v := os.Getenv("HOLMES_BASE_URL"); v != "" {
+		result.BaseURL = v
+	}
+	if v := os.Getenv("HOLMES_API_KEY"); v != "" {
+		result.APIKey = v
+	}
+
+	// If LLM is configured but Holmes has no separate key, share the LLM config
+	if result.APIKey == "" {
+		llm := resolveLLMConfig(cfg)
+		if llm.APIKey != "" {
+			result.APIKey = llm.APIKey
+		}
+		if result.BaseURL == "" && llm.BaseURL != "" {
+			result.BaseURL = llm.BaseURL
+		}
+	}
+
+	// Implicitly enable if model is set
+	if result.Model != "" && result.APIKey != "" {
 		result.Enabled = true
 	}
 

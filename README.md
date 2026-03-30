@@ -195,6 +195,68 @@ make scenarios-clean    # remove all
 | PVC not bound | `/check db-pvc-pending` | Pending — PVC binding issue |
 | Rollout regression | `/deploy payment` | Rollout — Release caused regression |
 
+## HolmesGPT Deep Investigation
+
+Optional agentic investigation mode. While AI Investigation makes 1 LLM call, Deep Investigation runs an agent loop — the LLM decides what to query (pods, logs, events), queries it, reasons, and repeats until it finds the root cause. Takes 1-2 minutes.
+
+**Requires:** `holmes` CLI installed + a model that supports **function calling** (tool use).
+
+### Install holmes CLI
+
+**pipx (recommended):**
+```bash
+pipx install holmesgpt
+```
+
+**Homebrew (Mac/Linux):**
+```bash
+brew tap robusta-dev/homebrew-holmesgpt
+brew install holmesgpt
+```
+
+**From source (no pip):**
+```bash
+git clone https://github.com/robusta-dev/holmesgpt.git
+cd holmesgpt
+poetry install --no-root
+# Binary: poetry run holmes ask --help
+# Symlink into PATH:
+ln -s "$(poetry env info -p)/bin/holmes" /usr/local/bin/holmes
+```
+
+**Verify:**
+```bash
+holmes ask --help
+```
+
+### Configure
+
+```yaml
+# config.yaml
+holmes:
+  enabled: true
+  model: openai/SaoLa3.1-medium
+  base_url: https://mkp-api.fptcloud.com
+  api_key: your-key
+  timeout: 120
+```
+
+Or env vars:
+```bash
+export HOLMES_MODEL=openai/SaoLa3.1-medium
+export HOLMES_BASE_URL=https://mkp-api.fptcloud.com
+# HOLMES_API_KEY auto-shared from LLM_API_KEY if not set
+```
+
+**FPT AI models with function calling support:**
+- `openai/SaoLa3.1-medium` — tested OK
+- `openai/SaoLa-Llama3.1-planner` — tested OK
+- `openai/Qwen2.5-Coder-32B-Instruct` — NO function calling (use for AI Investigation only)
+
+### Usage
+
+After enabling, a 🔬 Deep button appears alongside AI/Static/Logs buttons on alerts and diagnosis results.
+
 ## Local Development
 
 See [SETUP.md](SETUP.md) for full local setup (kind + VictoriaMetrics + VictoriaLogs + Alertmanager).

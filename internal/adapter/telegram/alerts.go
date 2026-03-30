@@ -40,7 +40,7 @@ func (b *Bot) sendAlertNotification(chatID int64, alertTarget webhook.AlertTarge
 	msg := webhook.FormatAlertMessage(alertTarget, alertCount, b.alertFormat)
 
 	// Build action buttons
-	keyboard := buildAlertKeyboard(clusterName, ns, resource)
+	keyboard := buildAlertKeyboard(clusterName, ns, resource, b.getCluster(clusterName).Engine.HasHolmes())
 
 	b.sendMessageWithKeyboard(chatID, msg, keyboard)
 
@@ -51,26 +51,31 @@ func (b *Bot) sendAlertNotification(chatID int64, alertTarget webhook.AlertTarge
 	)
 }
 
-// buildAlertKeyboard creates the 3-action button row for alerts.
+// buildAlertKeyboard creates the action button rows for alerts.
 // Callback data format: "action:cluster:ns:name"
-func buildAlertKeyboard(cluster, ns, resource string) tgbotapi.InlineKeyboardMarkup {
+func buildAlertKeyboard(cluster, ns, resource string, hasHolmes bool) tgbotapi.InlineKeyboardMarkup {
 	aiData := fmt.Sprintf("ai:%s:%s:%s", cluster, ns, resource)
 	staticData := fmt.Sprintf("static:%s:%s:%s", cluster, ns, resource)
 	logsData := fmt.Sprintf("logs:%s:%s:%s", cluster, ns, resource)
 
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🤖 AI Investigation", aiData),
-			tgbotapi.NewInlineKeyboardButtonData("📊 Static Analysis", staticData),
-			tgbotapi.NewInlineKeyboardButtonData("📜 Logs", logsData),
-		),
+	row := tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("🤖 AI", aiData),
+		tgbotapi.NewInlineKeyboardButtonData("📊 Static", staticData),
+		tgbotapi.NewInlineKeyboardButtonData("📜 Logs", logsData),
 	)
+
+	if hasHolmes {
+		deepData := fmt.Sprintf("deep:%s:%s:%s", cluster, ns, resource)
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData("🔬 Deep", deepData))
+	}
+
+	return tgbotapi.NewInlineKeyboardMarkup(row)
 }
 
 // buildPostDiagnosisKeyboard creates follow-up buttons after a diagnosis result.
 // Shows the actions the user hasn't just run, so they can try alternatives.
-// completedAction: "ai", "static", or "logs" — the action that just finished.
-func buildPostDiagnosisKeyboard(cluster, ns, resource, completedAction string) tgbotapi.InlineKeyboardMarkup {
+// completedAction: "ai", "static", "logs", or "deep" — the action that just finished.
+func buildPostDiagnosisKeyboard(cluster, ns, resource, completedAction string, hasHolmes bool) tgbotapi.InlineKeyboardMarkup {
 	aiData := fmt.Sprintf("ai:%s:%s:%s", cluster, ns, resource)
 	staticData := fmt.Sprintf("static:%s:%s:%s", cluster, ns, resource)
 	logsData := fmt.Sprintf("logs:%s:%s:%s", cluster, ns, resource)
@@ -84,6 +89,10 @@ func buildPostDiagnosisKeyboard(cluster, ns, resource, completedAction string) t
 	}
 	if completedAction != "logs" {
 		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("📜 Logs", logsData))
+	}
+	if hasHolmes && completedAction != "deep" {
+		deepData := fmt.Sprintf("deep:%s:%s:%s", cluster, ns, resource)
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("🔬 Deep", deepData))
 	}
 
 	return tgbotapi.NewInlineKeyboardMarkup(

@@ -316,7 +316,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 	// Send final result with action buttons
 	formatted := FormatResult(result)
-	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, target.ResourceName, "static")
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, target.ResourceName, "static", cluster.Engine.HasHolmes())
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, formatted, keyboard)
 	} else {

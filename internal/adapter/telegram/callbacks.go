@@ -93,6 +93,16 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			b.handleScan(ctx, chatID, ParsedMessage{Command: "scan", Namespace: ns, Cluster: cluster})
 		}()
 
+	case "deep":
+		if name == "" {
+			b.inflight.Delete(inflightKey)
+			return
+		}
+		go func() {
+			defer b.inflight.Delete(inflightKey)
+			b.handleDeepInvestigation(ctx, chatID, alertMsgID, cluster, ns, name)
+		}()
+
 	case "rerun":
 		if name == "" {
 			b.inflight.Delete(inflightKey)
@@ -125,17 +135,17 @@ func (b *Bot) handleAIInvestigation(ctx context.Context, chatID int64, replyTo i
 		if err != nil {
 			b.logger.Warn("AI investigation failed", "error", err)
 			text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ LLM unavailable: %s\n\nUse 📊 Static Analysis instead.", esc(err.Error()))
-			keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai")
+			keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai", cluster.Engine.HasHolmes())
 			b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 			return
 		}
 
 		text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n%s", esc(summary))
-		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai")
+		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai", cluster.Engine.HasHolmes())
 		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 	} else {
 		text := "🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ LLM not configured.\n\nSet <code>llm.enabled: true</code> in config.yaml or use 📊 Static Analysis."
-		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai")
+		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai", cluster.Engine.HasHolmes())
 		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 	}
 }
@@ -168,7 +178,7 @@ func (b *Bot) handleStaticAnalysis(ctx context.Context, chatID int64, replyTo in
 
 	result := cluster.Engine.RunWithoutLLM(ctx, req, progress)
 	formatted := FormatResultCompact(result)
-	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "static")
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "static", cluster.Engine.HasHolmes())
 
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, formatted, keyboard)
@@ -225,12 +235,39 @@ func (b *Bot) handleShowLogs(ctx context.Context, chatID int64, replyTo int, clu
 			esc(target.Kind), esc(target.ResourceName), esc(ns))
 	}
 
-	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "logs")
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "logs", cluster.Engine.HasHolmes())
 	if progressMsg != 0 {
 		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 	} else {
 		b.sendMessageWithKeyboard(chatID, text, keyboard)
 	}
+}
+
+// handleDeepInvestigation runs HolmesGPT agent for deep root cause analysis.
+func (b *Bot) handleDeepInvestigation(ctx context.Context, chatID int64, replyTo int, clusterName, ns, name string) {
+	cluster := b.getCluster(clusterName)
+	target := b.resolveOrFallback(ns, name)
+	target.Cluster = cluster.Name
+
+	if !cluster.Engine.HasHolmes() {
+		b.sendReply(chatID, replyTo, "🔬 <b>Deep Investigation</b>\n─────────────────────\n\n❌ HolmesGPT not configured.\n\nSet <code>holmes.enabled: true</code> in config.yaml.")
+		return
+	}
+
+	progressMsg := b.sendReply(chatID, replyTo, fmt.Sprintf("🔬 Deep investigating %s...\nThis may take 1-2 minutes.", target.FullName()))
+
+	result, err := cluster.Engine.DeepInvestigate(ctx, target)
+	if err != nil {
+		b.logger.Warn("deep investigation failed", "error", err)
+		text := fmt.Sprintf("🔬 <b>Deep Investigation</b>\n─────────────────────\n\n❌ %s", esc(err.Error()))
+		keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "deep", true)
+		b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
+		return
+	}
+
+	text := fmt.Sprintf("🔬 <b>Deep Investigation</b>\n─────────────────────\n\n%s", esc(result))
+	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "deep", true)
+	b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 }
 
 // --- helpers ---

@@ -10,6 +10,7 @@ import (
 	"github.com/lazy-diagnose-k8s/internal/composer"
 	"github.com/lazy-diagnose-k8s/internal/diagnosis"
 	"github.com/lazy-diagnose-k8s/internal/domain"
+	"github.com/lazy-diagnose-k8s/internal/holmes"
 	"github.com/lazy-diagnose-k8s/internal/provider"
 )
 
@@ -20,6 +21,7 @@ type ProgressFunc func(msg string)
 type Engine struct {
 	collector  *provider.Collector
 	summarizer *diagnosis.Summarizer
+	holmes     *holmes.Client
 	logger     *slog.Logger
 }
 
@@ -30,6 +32,22 @@ func New(collector *provider.Collector, summarizer *diagnosis.Summarizer, logger
 		summarizer: summarizer,
 		logger:     logger,
 	}
+}
+
+// SetHolmes sets the HolmesGPT client for deep investigation.
+func (e *Engine) SetHolmes(h *holmes.Client) { e.holmes = h }
+
+// HasHolmes returns true if HolmesGPT is configured.
+func (e *Engine) HasHolmes() bool { return e.holmes != nil }
+
+// DeepInvestigate runs a HolmesGPT investigation for the given target.
+func (e *Engine) DeepInvestigate(ctx context.Context, target *domain.Target) (string, error) {
+	if e.holmes == nil {
+		return "", fmt.Errorf("HolmesGPT not configured")
+	}
+	question := fmt.Sprintf("what is wrong with the %s %s in namespace %s?",
+		target.Kind, target.ResourceName, target.Namespace)
+	return e.holmes.Investigate(ctx, question)
 }
 
 // GetCollector returns the provider collector for direct use.
