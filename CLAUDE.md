@@ -57,3 +57,14 @@ Config file: `configs/config.yaml`. Key env var overrides: `TELEGRAM_BOT_TOKEN` 
 ## Testing
 
 Tests use mock providers (`internal/provider/mock.go`). Test files: `adapter_test.go` (telegram formatting), `engine_test.go` (diagnosis scoring), `resolver_test.go` (target resolution). Test scenarios deploy real K8s failure cases via `deploy/test-workloads/`.
+
+## Coding Conventions
+
+- **Error wrapping**: always use `fmt.Errorf("context: %w", err)` — never bare `return err`
+- **Logging**: use `slog` package (structured logging), not `log` or `fmt.Println`
+- **No `panic()`** in library/package code — only in `main()` for truly unrecoverable setup failures
+- **Test naming**: `TestFunctionName_scenario` (e.g., `TestAnalyze_crashLoopWithOOM`)
+- **Interfaces**: define where consumed, not where implemented
+- **Context**: pass `context.Context` as first param, never store in structs
+- **Naming**: follow Go conventions — `ID` not `Id`, `URL` not `Url`, receivers are short (1-2 chars)
+- **Imports**: group as stdlib, external, internal — goimports handles this automatically
