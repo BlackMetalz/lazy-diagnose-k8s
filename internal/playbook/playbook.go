@@ -231,6 +231,13 @@ func recommendSteps(intent domain.Intent, result *domain.DiagnosisResult) []stri
 			"Check ServiceAccount permissions (RBAC)",
 			"Verify file/directory permissions in container",
 		}
+	case "http_error_spike":
+		return []string{
+			"Check application logs for error stack traces",
+			"Review recent deployments or config changes",
+			"Check downstream service health",
+			"Consider rollback if caused by recent deploy",
+		}
 	default:
 		return []string{"Check logs and events using commands below"}
 	}

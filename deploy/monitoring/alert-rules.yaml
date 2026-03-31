@@ -64,6 +64,21 @@ data:
               summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has image pull errors"
               description: "Container {{ $labels.container }} is stuck in {{ $labels.reason }}. Check image name and pull secrets."
 
+          # HTTP 5xx error rate high (>5% of total requests for 1 min)
+          - alert: HighHTTP5xxErrorRate
+            expr: |
+              (
+                sum by (namespace, service) (rate(nginx_ingress_controller_requests{status=~"5.."}[1m]))
+                /
+                sum by (namespace, service) (rate(nginx_ingress_controller_requests[1m]))
+              ) > 0.05
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "High 5xx error rate for {{ $labels.service }} in {{ $labels.namespace }}"
+              description: "Service {{ $labels.service }} has {{ $value | humanizePercentage }} 5xx error rate (>5%) for more than 1 minute."
+
           # Deployment replicas mismatch
           - alert: KubeDeploymentReplicasMismatch
             expr: |

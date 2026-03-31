@@ -27,6 +27,7 @@ ALERTS=(
   "10|KubePodCrashLooping|critical|demo-staging|api-runtime-crash|api-runtime-crash-6f8b9c7d4-x2k9p|api|Container api crashed after running for 30s. Runtime panic."
   "11|KubePodCrashLooping|warning|demo-staging|api-init-fail|api-init-fail-7c4d8e9f5-m3n7q|db-migrate|Init container db-migrate failed. Main container not started."
   "12|KubePodNotReady|warning|demo-infra|api-not-ready|api-not-ready-5b8c9d7e3-k4p2r|api|Pod Running but not Ready. Readiness probe failing — no traffic routed."
+  "13|HighHTTP5xxErrorRate|critical|demo-staging|webapp-testing|webapp-testing-7799679bdb-gm4bb|webapp|Service webapp-testing has 50% 5xx error rate (>5%) for more than 1 minute."
 )
 
 show_menu() {
@@ -67,7 +68,8 @@ send_alert() {
         "namespace": "$ns",
         "pod": "$pod",
         "container": "$container",
-        "deployment": "$deploy"
+        "deployment": "$deploy",
+        "service": "$deploy"
       },
       "annotations": {
         "summary": "$summary",
@@ -120,7 +122,7 @@ case "$CHOICE" in
     echo ""
     echo "Done. Check Telegram."
     ;;
-  [1-9]|1[0-2])
+  [1-9]|1[0-3])
     IDX=$((CHOICE - 1))
     if [ $IDX -lt ${#ALERTS[@]} ]; then
       echo "Sending alert #$CHOICE..."

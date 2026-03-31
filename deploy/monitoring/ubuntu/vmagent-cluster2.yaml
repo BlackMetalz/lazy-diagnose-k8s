@@ -62,6 +62,22 @@ data:
           - action: labelmap
             regex: __meta_kubernetes_node_label_(.+)
 
+      # Scrape nginx-ingress-controller (HTTP request metrics for 5xx detection)
+      # honor_labels: true preserves namespace/service labels from the metric itself
+      - job_name: nginx-ingress
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["ingress-nginx"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            regex: controller
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: ${1}:10254
+
       # Scrape cAdvisor (container CPU/memory/restart metrics)
       - job_name: kubelet-cadvisor
         scheme: https

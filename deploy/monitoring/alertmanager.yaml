@@ -13,7 +13,7 @@ data:
       group_by: [alertname, namespace, pod]
       group_wait: 15s
       group_interval: 1m
-      repeat_interval: 4h
+      repeat_interval: 3m
 
     receivers:
       - name: lazy-diagnose

@@ -7,12 +7,13 @@ Guide for setting up a dev environment on macOS with Docker Desktop.
 ## Data Flow Overview
 
 ```
-kind cluster
+kind cluster (ingress ports: 80/443)
   ├── kube-state-metrics ─── scrape ──→ vmagent ─── remote_write ──→ VictoriaMetrics (host:8428)
   ├── kubelet/cAdvisor   ─── scrape ──┘
+  ├── nginx-ingress      ─── scrape ──┘  (HTTP request metrics for 5xx detection)
   ├── container logs      ─── tail  ──→ vlagent  ─── native push ──→ VictoriaLogs  (host:9428)
   ├── vmalert ─── query VM ──→ evaluate rules ──→ Alertmanager ──→ webhook ──→ Bot :8080
-  └── test workloads (checkout, worker, payment, ...)
+  └── test workloads (checkout, worker, payment, webapp-testing ...)
 
 Bot (host)
   ├── :8080 ← Alertmanager webhooks (auto-diagnosis)
@@ -42,6 +43,24 @@ kind create cluster --config deploy/kind-config.yaml
 kubectl cluster-info --context kind-lazy-diag
 kubectl get nodes
 ```
+
+---
+
+## Step 1.5: Install Nginx Ingress Controller (optional, for HTTP metrics)
+
+Required for HTTP 5xx error rate detection. `make ingress` installs nginx-ingress-controller and enables Prometheus metrics (`--enable-metrics=true`, port 10254).
+
+```bash
+make ingress
+
+# Verify controller is running
+kubectl get pods -n ingress-nginx
+
+# Verify metrics endpoint (after sending at least one request through ingress)
+kubectl -n ingress-nginx exec deploy/ingress-nginx-controller -- curl -s localhost:10254/metrics | grep nginx_ingress_controller_requests | head -3
+```
+
+> **Note:** The kind config has `extraPortMappings` for ports 80/443. If you created the cluster before this change, recreate it: `kind delete cluster --name lazy-diag && kind create cluster --config deploy/kind-config.yaml`
 
 ---
 
@@ -111,13 +130,11 @@ sleep 30
 
 # Verify
 kubectl -n monitoring get pods
-kubectl -n monitoring logs deployment/vmagent --tail=20
 ```
 
 **Verify metrics are flowing:**
 ```bash
 # Wait ~30s for vmagent to complete first scrape cycle
-sleep 30
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=kube_pod_info' | jq '.data.result | length'
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=container_memory_usage_bytes' | jq '.data.result | length'
 curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=kube_pod_container_status_restarts_total' | jq '.data.result[:2]'
@@ -153,7 +170,6 @@ kubectl apply -f deploy/monitoring/vlagent.yaml
 
 # Verify
 kubectl -n monitoring get pods -l app=vlagent
-kubectl -n monitoring logs daemonset/vlagent --tail=20
 ```
 
 **Verify logs are flowing:**
@@ -182,7 +198,7 @@ VictoriaMetrics (metrics data)
 ```
 
 ```bash
-# Alert rules (CrashLoop, Pending, OOMKilled, ImagePull, Replicas mismatch)
+# Alert rules (CrashLoop, Pending, OOMKilled, ImagePull, HTTP 5xx, Replicas mismatch)
 kubectl apply -f deploy/monitoring/alert-rules.yaml
 
 # Alertmanager — receives alerts from vmalert, sends webhooks to bot
@@ -193,8 +209,6 @@ kubectl apply -f deploy/monitoring/vmalert.yaml
 
 # Verify
 kubectl -n monitoring get pods
-kubectl -n monitoring logs deployment/vmalert --tail=10
-kubectl -n monitoring logs deployment/alertmanager --tail=10
 ```
 
 **Verify alerts are firing** (after deploying test workloads):
@@ -207,53 +221,82 @@ kubectl -n monitoring port-forward svc/alertmanager 9093:9093 &
 curl -s http://localhost:9093/api/v2/alerts | jq '.[].labels.alertname'
 ```
 
+**vmalert UI** (see all rules + firing status):
+```bash
+kubectl -n monitoring port-forward deployment/vmalert 8880:8880
+# Open http://localhost:8880/vmalert/groups
+```
+
 **Note:** The bot must be running with `webhook.enabled: true` (default port `:8080`) for Alertmanager to deliver alerts. Alertmanager inside kind reaches the bot via `host.docker.internal:8080`.
 
 ---
 
 ## Step 6: Deploy test workloads
 
+Deploy all test scenarios at once:
+
 ```bash
-kubectl create namespace prod
-kubectl apply -f deploy/test-workloads/workloads.yaml
+make scenarios
 ```
 
-Base workloads create 3 test scenarios:
+This creates namespaces (`demo-prod`, `demo-staging`, `demo-infra`) and deploys all test workloads.
 
-| Workload | Expected State | Diagnosis Case |
-|---|---|---|
-| `checkout` | CrashLoopBackOff (OOMKilled) | CrashLoop playbook |
-| `worker` | Pending (requests 100 CPU, 256Gi RAM) | Pending playbook |
-| `payment` | Running (healthy) | Baseline / no issue |
+Or step by step:
 
-Additional scenarios (deployed via `make scenarios`):
+```bash
+# Create namespaces first (required!)
+kubectl apply -f deploy/test-workloads/namespaces.yaml
 
-| Workload | Expected State | Diagnosis Case |
-|---|---|---|
-| `api-config-missing` | CrashLoopBackOff | Missing env var |
-| `api-dependency-fail` | CrashLoopBackOff | Connection refused |
-| `api-runtime-crash` | CrashLoopBackOff | App runs 30s then crashes |
-| `api-init-fail` | Init:CrashLoopBackOff | Init container migration fail |
-| `api-bad-image` | ErrImagePull | Image not found |
-| `api-probe-fail` | Running + restarts | Liveness probe fail |
-| `api-not-ready` | Running (0/1 Ready) | Readiness probe fail — silent failure |
-| `ml-worker-taint` | Pending | Node selector mismatch |
-| `db-pvc-pending` | Pending | PVC not bound |
+# Base workloads
+kubectl apply -f deploy/test-workloads/workloads.yaml
 
-Full details — see [deploy/test-workloads/SCENARIOS.md](deploy/test-workloads/SCENARIOS.md).
+# All scenario workloads
+kubectl apply -f deploy/test-workloads/
+```
 
 **Verify:**
 ```bash
-kubectl get pods -n prod
+make scenarios-status
 ```
+
+Test scenarios:
+
+| Namespace | Workload | Expected State | Diagnosis Case |
+|---|---|---|---|
+| demo-prod | `checkout` | CrashLoopBackOff (OOMKilled) | CrashLoop playbook |
+| demo-prod | `worker` | Pending (requests 100 CPU) | Pending playbook |
+| demo-prod | `payment` | Running (healthy) | Baseline / no issue |
+| demo-staging | `api-config-missing` | CrashLoopBackOff | Missing env var |
+| demo-staging | `api-dependency-fail` | CrashLoopBackOff | Connection refused |
+| demo-staging | `api-runtime-crash` | CrashLoopBackOff | App runs 30s then crashes |
+| demo-staging | `api-init-fail` | Init:CrashLoopBackOff | Init container migration fail |
+| demo-staging | `webapp-testing` | Running (5xx via ingress) | HTTP error rate spike |
+| demo-infra | `api-bad-image` | ErrImagePull | Image not found |
+| demo-infra | `api-probe-fail` | Running + restarts | Liveness probe fail |
+| demo-infra | `api-not-ready` | Running (0/1 Ready) | Readiness probe fail |
+| demo-infra | `ml-worker-taint` | Pending | Node selector mismatch |
+| demo-infra | `db-pvc-pending` | Pending | PVC not bound |
+
+Full details — see [deploy/test-workloads/SCENARIOS.md](deploy/test-workloads/SCENARIOS.md).
+
+**Generate 5xx traffic** (requires ingress from Step 1.5):
+```bash
+# ~10 req/s hitting /503 via ingress, Ctrl+C to stop
+make load-5xx
+```
+
+Wait ~2 min for `HighHTTP5xxErrorRate` alert to fire. Verify with `/check webapp-testing -n demo-staging` in Telegram.
 
 **Verify end-to-end data flow:**
 ```bash
 # Metrics: restart count
-curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=kube_pod_container_status_restarts_total{namespace="prod"}' | jq '.data.result[] | {pod: .metric.pod, restarts: .value[1]}'
+curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=kube_pod_container_status_restarts_total{namespace="demo-prod"}' | jq '.data.result[] | {pod: .metric.pod, restarts: .value[1]}'
+
+# Metrics: 5xx error rate (after running load-5xx)
+curl -s 'http://localhost:8428/api/v1/query' --data-urlencode 'query=rate(nginx_ingress_controller_requests{status=~"5.."}[5m])' | jq '.data.result[] | {service: .metric.service, status: .metric.status, rate: .value[1]}'
 
 # Logs: checkout container
-curl -s 'http://localhost:9428/select/logsql/query' -d 'query=kubernetes.pod_namespace:prod AND kubernetes.container_name:checkout' -d 'limit=10' | jq
+curl -s 'http://localhost:9428/select/logsql/query' -d 'query=kubernetes.pod_namespace:demo-prod AND kubernetes.container_name:checkout' -d 'limit=10' | jq
 ```
 
 ---
@@ -280,12 +323,13 @@ make run
 | kube-state-metrics | ~64MB | inside kind |
 | vmagent | ~128MB | inside kind |
 | vlagent | ~28MB per node | DaemonSet, 2 nodes |
+| nginx-ingress | ~128MB | inside kind (optional) |
 | vmalert | ~32MB | inside kind |
 | Alertmanager | ~32MB | inside kind |
 | VictoriaMetrics | ~200MB | Docker host |
 | VictoriaLogs | ~200MB | Docker host |
 | Bot | ~50MB | Go binary |
-| **Total** | **~2.8GB** | M1 Pro 16GB: plenty of headroom |
+| **Total** | **~2.9GB** | M1 Pro 16GB: plenty of headroom |
 
 ---
 

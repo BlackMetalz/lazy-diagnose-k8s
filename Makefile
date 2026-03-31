@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts cluster2-create cluster2-monitoring cluster2-scenarios cluster2-clean host-ip-patch ubuntu-monitoring ubuntu-cluster2-monitoring
+.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts load-5xx load-5xx-mix ingress ingress-cluster2 cluster2-create cluster2-monitoring cluster2-scenarios cluster2-clean host-ip-patch ubuntu-monitoring ubuntu-cluster2-monitoring
 
 BINARY=lazy-diagnose-k8s
 IMAGE=lazy-diagnose-k8s:latest
@@ -64,17 +64,61 @@ scenarios-status:
 	@echo ""
 	@echo "=== Expected ==="
 	@echo "  demo-prod:    checkout=CrashLoop  worker=Pending  payment=Running"
-	@echo "  demo-staging: api-config-missing=CrashLoop  api-dependency-fail=CrashLoop  api-runtime-crash=CrashLoop  api-init-fail=Init:CrashLoop"
+	@echo "  demo-staging: api-config-missing=CrashLoop  api-dependency-fail=CrashLoop  api-runtime-crash=CrashLoop  api-init-fail=Init:CrashLoop  webapp-testing=Running(5xx)"
 	@echo "  demo-infra:   api-bad-image=ImagePull  api-probe-fail=CrashLoop  ml-worker-taint=Pending  db-pvc-pending=Pending  api-not-ready=Running(0/1)"
 
 demo-alerts:
 	@./deploy/test-workloads/demo-webhooks.sh $(NUM)
+
+# Generate 5xx traffic to webapp-testing via ingress (Ctrl+C to stop)
+# Usage: make load-5xx              — 100% 5xx (always /503)
+#        make load-5xx-mix          — ~50% 5xx, 50% ok (uses /version endpoint)
+#        make load-5xx PORT=8180    — cluster 2
+LOAD_5XX_PORT ?= 80
+LOAD_5XX_RPS ?= 10
+
+load-5xx:
+	@echo "Sending 100%% 5xx to localhost:$(LOAD_5XX_PORT)/503 (~$(LOAD_5XX_RPS) req/s). Ctrl+C to stop."
+	@while true; do curl -s -o /dev/null -w "%{http_code}\n" -H "Host: webapp-testing.local" http://localhost:$(LOAD_5XX_PORT)/503; sleep $$(echo "scale=3; 1/$(LOAD_5XX_RPS)" | bc); done
+
+load-5xx-mix:
+	@echo "Sending ~50%% 5xx to localhost:$(LOAD_5XX_PORT)/version (~$(LOAD_5XX_RPS) req/s). Ctrl+C to stop."
+	@while true; do curl -s -o /dev/null -w "%{http_code}\n" -H "Host: webapp-testing.local" http://localhost:$(LOAD_5XX_PORT)/version; sleep $$(echo "scale=3; 1/$(LOAD_5XX_RPS)" | bc); done
 
 scenarios-clean:
 	@kubectl delete -f deploy/test-workloads/ --ignore-not-found
 	@kubectl delete pvc data-pvc-test -n demo-infra --ignore-not-found
 	@kubectl delete ns demo-prod demo-staging demo-infra --ignore-not-found
 	@echo "All scenarios removed."
+
+# Nginx Ingress Controller (required for HTTP error rate metrics)
+ingress:
+	kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/kind/deploy.yaml
+	@echo "Waiting for ingress-nginx controller to be ready..."
+	kubectl wait --namespace ingress-nginx \
+		--for=condition=ready pod \
+		--selector=app.kubernetes.io/component=controller \
+		--timeout=120s
+	@echo "Enabling metrics on ingress-nginx..."
+	kubectl -n ingress-nginx patch deployment ingress-nginx-controller --type=json \
+		-p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-metrics=true"},{"op":"add","path":"/spec/template/spec/containers/0/ports/-","value":{"containerPort":10254,"name":"metrics","protocol":"TCP"}}]'
+	kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
+	@echo "Ingress-nginx is ready (metrics on :10254)."
+
+# Nginx Ingress Controller for cluster 2
+# Cluster 2 uses hostPorts 8180/8443 to avoid conflict with cluster 1
+ingress-cluster2:
+	kubectl --context kind-lazy-diag-2 apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/kind/deploy.yaml
+	@echo "Waiting for ingress-nginx controller to be ready on cluster 2..."
+	kubectl --context kind-lazy-diag-2 wait --namespace ingress-nginx \
+		--for=condition=ready pod \
+		--selector=app.kubernetes.io/component=controller \
+		--timeout=120s
+	@echo "Enabling metrics on ingress-nginx (cluster 2)..."
+	kubectl --context kind-lazy-diag-2 -n ingress-nginx patch deployment ingress-nginx-controller --type=json \
+		-p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-metrics=true"},{"op":"add","path":"/spec/template/spec/containers/0/ports/-","value":{"containerPort":10254,"name":"metrics","protocol":"TCP"}}]'
+	kubectl --context kind-lazy-diag-2 -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
+	@echo "Ingress-nginx is ready on cluster 2 (ports 8180/8443, metrics on :10254)."
 
 # Cluster 2 (multi-cluster setup)
 cluster2-create:

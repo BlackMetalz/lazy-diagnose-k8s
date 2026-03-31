@@ -48,8 +48,8 @@ func (m *MockMetricsProvider) CollectFacts(_ context.Context, _ *domain.Target, 
 
 // NewOOMKilledFixture creates a mock evidence bundle for OOMKilled scenario.
 func NewOOMKilledFixture() *domain.EvidenceBundle {
-	memUsage := 510.0 * 1024 * 1024  // 510Mi
-	memLimit := 512.0 * 1024 * 1024  // 512Mi
+	memUsage := 510.0 * 1024 * 1024 // 510Mi
+	memLimit := 512.0 * 1024 * 1024 // 512Mi
 	restartRate := 3.0
 
 	return &domain.EvidenceBundle{
@@ -111,6 +111,51 @@ func NewOOMKilledFixture() *domain.EvidenceBundle {
 			MemoryLimit: &memLimit,
 			RestartRate: &restartRate,
 		},
+	}
+}
+
+// NewHTTPErrorSpikeFixture creates a mock evidence bundle for HTTP 5xx error rate spike.
+// Pods are healthy and running, but metrics show elevated 5xx error rate.
+func NewHTTPErrorSpikeFixture() *domain.EvidenceBundle {
+	errorRate := 2.5
+	errorRateBefore := 0.1
+
+	return &domain.EvidenceBundle{
+		Target: &domain.Target{
+			Name:         "webapp-testing",
+			Namespace:    "demo-staging",
+			Kind:         "deployment",
+			ResourceName: "webapp-testing",
+		},
+		K8sFacts: &domain.K8sFacts{
+			PodStatuses: []domain.PodStatus{
+				{
+					Name:         "webapp-testing-7f8b9c-x4k2p",
+					Phase:        "Running",
+					Ready:        true,
+					RestartCount: 0,
+					ContainerStatuses: []domain.ContainerStatus{
+						{
+							Name:  "webapp",
+							Ready: true,
+							State: "running",
+						},
+					},
+				},
+			},
+			RolloutStatus: &domain.RolloutStatus{
+				CurrentRevision:     "3",
+				DesiredReplicas:     2,
+				ReadyReplicas:       2,
+				UpdatedReplicas:     2,
+				UnavailableReplicas: 0,
+			},
+		},
+		MetricsFacts: &domain.MetricsFacts{
+			ErrorRate:       &errorRate,
+			ErrorRateBefore: &errorRateBefore,
+		},
+		CollectedAt: time.Now(),
 	}
 }
 

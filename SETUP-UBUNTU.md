@@ -17,13 +17,14 @@ This guide uses **separate manifests** (`deploy/monitoring/ubuntu/`) that read t
 Same as macOS, but pods reach the host via the Docker bridge gateway IP (e.g. `172.19.0.1`) instead of `host.docker.internal`.
 
 ```
-kind cluster
+kind cluster (ingress ports: 80/443)
   ├── kube-state-metrics ─── scrape ──→ vmagent ─── remote_write ──→ VictoriaMetrics (host:8428)
   ├── kubelet/cAdvisor   ─── scrape ──┘                               via 172.19.0.1
+  ├── nginx-ingress      ─── scrape ──┘  (HTTP request metrics for 5xx detection)
   ├── container logs      ─── tail  ──→ vlagent  ─── native push ──→ VictoriaLogs  (host:9428)
   │                                                                    via 172.19.0.1
   ├── vmalert ─── query VM ──→ evaluate rules ──→ Alertmanager ──→ webhook ──→ Bot :8080
-  └── test workloads (checkout, worker, payment, ...)
+  └── test workloads (checkout, worker, payment, webapp-testing ...)
 ```
 
 ---
@@ -56,6 +57,24 @@ kind create cluster --config deploy/kind-config.yaml
 kubectl cluster-info --context kind-lazy-diag
 kubectl get nodes
 ```
+
+---
+
+## Step 1.5: Install Nginx Ingress Controller (optional, for HTTP metrics)
+
+Required for HTTP 5xx error rate detection. `make ingress` installs nginx-ingress-controller and enables Prometheus metrics (`--enable-metrics=true`, port 10254).
+
+```bash
+make ingress
+
+# Verify controller is running
+kubectl get pods -n ingress-nginx
+
+# Verify metrics endpoint (after sending at least one request through ingress)
+kubectl -n ingress-nginx exec deploy/ingress-nginx-controller -- curl -s localhost:10254/metrics | grep nginx_ingress_controller_requests | head -3
+```
+
+> **Note:** The kind config has `extraPortMappings` for ports 80/443. If you created the cluster before this change, recreate it: `kind delete cluster --name lazy-diag && kind create cluster --config deploy/kind-config.yaml`
 
 ---
 
@@ -138,6 +157,15 @@ make scenarios
 make scenarios-status
 ```
 
+**Generate 5xx traffic** (requires ingress from Step 1.5):
+```bash
+# ~10 req/s hitting /503 via ingress, Ctrl+C to stop
+make load-5xx
+
+# For cluster 2 (port 8180)
+make load-5xx LOAD_5XX_PORT=8180
+```
+
 ---
 
 ## Step 5: Alerting (verify)
@@ -169,8 +197,11 @@ make run
 ## Multi-Cluster (Cluster 2)
 
 ```bash
-# Create cluster 2
+# Create cluster 2 (ports 8180/8443 to avoid conflict with cluster 1)
 make cluster2-create
+
+# Install ingress controller on cluster 2
+make ingress-cluster2
 
 # Deploy monitoring (Ubuntu)
 make ubuntu-cluster2-monitoring

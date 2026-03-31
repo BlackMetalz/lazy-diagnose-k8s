@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Telegram ChatOps bot for Kubernetes diagnosis. Receives Alertmanager webhooks or manual `/check`/`/scan` commands, runs deterministic playbook-based scoring (CrashLoop, Pending, Rollout regression), and optionally summarizes with an LLM. Returns structured results with inline action buttons in Telegram.
+Telegram ChatOps bot for Kubernetes diagnosis. Receives Alertmanager webhooks or manual `/check`/`/scan` commands, runs deterministic playbook-based scoring (CrashLoop, Pending, Rollout regression, HTTP 5xx error spike), and optionally summarizes with an LLM. Returns structured results with inline action buttons in Telegram.
 
 ## Commands
 
@@ -14,9 +14,13 @@ make run            # go run ./cmd/bot
 make test           # go test ./... -v
 make lint           # golangci-lint run ./...
 make docker-load    # build image + load into kind cluster "lazy-diag"
-make scenarios      # deploy 9 test failure scenarios to kind
+make scenarios      # deploy 10 test failure scenarios to kind
 make scenarios-status  # check pod status vs expected
 make demo-alerts NUM=3 # fire test alert webhooks
+make ingress        # install nginx-ingress + enable metrics (port 10254)
+make ingress-cluster2  # same for cluster 2 (ports 8180/8443)
+make load-5xx       # generate 5xx traffic via ingress (Ctrl+C to stop)
+make load-5xx LOAD_5XX_PORT=8180  # cluster 2
 ```
 
 Run a single test:

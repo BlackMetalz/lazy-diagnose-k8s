@@ -178,3 +178,26 @@ func TestAnalyze_DependencyFail(t *testing.T) {
 
 	t.Logf("Summary: %s", result.Summary)
 }
+
+func TestAnalyze_HTTPErrorSpike(t *testing.T) {
+	bundle := provider.NewHTTPErrorSpikeFixture()
+
+	result := AnalyzeEvidence(bundle)
+
+	if result.PrimaryHypothesis == nil {
+		t.Fatal("expected primary hypothesis, got nil")
+	}
+
+	if result.PrimaryHypothesis.ID != "http_error_spike" {
+		t.Errorf("expected http_error_spike, got %s", result.PrimaryHypothesis.ID)
+	}
+
+	if result.PrimaryHypothesis.Score < 40 {
+		t.Errorf("expected score >= 40, got %d", result.PrimaryHypothesis.Score)
+	}
+
+	t.Logf("Summary: %s", result.Summary)
+	t.Logf("Score: %d/%d", result.PrimaryHypothesis.Score, result.PrimaryHypothesis.MaxScore)
+	t.Logf("Signals: %v", result.PrimaryHypothesis.Signals)
+	t.Logf("Evidence: %v", result.SupportingEvidence)
+}

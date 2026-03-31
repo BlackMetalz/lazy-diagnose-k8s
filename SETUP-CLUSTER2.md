@@ -5,9 +5,10 @@ Guide for adding a second kind cluster to test multi-cluster diagnosis. Cluster 
 ## Data Flow Overview
 
 ```
-kind cluster "lazy-diag-2"
+kind cluster "lazy-diag-2" (ingress ports: 8180/8443)
   ├── kube-state-metrics ─── scrape ──→ vmagent ─── remote_write ──→ VictoriaMetrics (host:8428)  ← shared with cluster 1
   ├── kubelet/cAdvisor   ─── scrape ──┘                               (label: cluster=lazy-diag-2)
+  ├── nginx-ingress      ─── scrape ──┘                               (HTTP request metrics)
   └── container logs      ─── tail  ──→ vlagent  ─── native push ──→ VictoriaLogs  (host:9428)   ← shared with cluster 1
                                                                        (label: cluster=lazy-diag-2)
 Bot (host)
@@ -41,6 +42,24 @@ kind get clusters
 # lazy-diag
 # lazy-diag-2
 ```
+
+---
+
+## Step 1.5: Install Nginx Ingress Controller (optional, for HTTP metrics)
+
+Cluster 2 uses ports **8180/8443** to avoid conflict with cluster 1's 80/443. `make ingress-cluster2` installs nginx-ingress-controller and enables Prometheus metrics (`--enable-metrics=true`, port 10254).
+
+```bash
+make ingress-cluster2
+
+# Verify controller is running
+kubectl --context kind-lazy-diag-2 get pods -n ingress-nginx
+
+# Verify metrics endpoint (after sending at least one request through ingress)
+kubectl --context kind-lazy-diag-2 -n ingress-nginx exec deploy/ingress-nginx-controller -- curl -s localhost:10254/metrics | grep nginx_ingress_controller_requests | head -3
+```
+
+> **Note:** If cluster 2 was created before the kind-config-cluster2.yaml update (extraPortMappings), recreate it: `make cluster2-clean && make cluster2-create`
 
 ---
 
@@ -108,6 +127,12 @@ make cluster2-scenarios
 
 # Verify
 kubectl --context kind-lazy-diag-2 get pods -A | grep -E 'demo-'
+```
+
+**Generate 5xx traffic on cluster 2** (requires ingress from Step 1.5):
+```bash
+# Cluster 2 ingress is on port 8180, Ctrl+C to stop
+make load-5xx LOAD_5XX_PORT=8180
 ```
 
 ---
@@ -188,8 +213,9 @@ Alerts from cluster 2 will carry `cluster=lazy-diag-2` label (propagated from vm
 | kube-state-metrics | ~64MB | inside kind |
 | vmagent | ~128MB | inside kind |
 | vlagent | ~28MB per node | DaemonSet, 2 nodes |
-| **Total cluster 2** | **~2.3GB** | |
-| **Total both clusters** | **~5.1GB** | Cluster 1 (~2.8GB) + Cluster 2 (~2.3GB) |
+| nginx-ingress | ~128MB | inside kind (optional) |
+| **Total cluster 2** | **~2.4GB** | |
+| **Total both clusters** | **~5.3GB** | Cluster 1 (~2.9GB) + Cluster 2 (~2.4GB) |
 
 ---
 

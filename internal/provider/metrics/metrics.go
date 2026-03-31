@@ -102,6 +102,42 @@ func (p *Provider) CollectFacts(ctx context.Context, target *domain.Target, time
 		facts.CPULimit = cpuLimit
 	}
 
+	// HTTP 5xx error rate (current, per second over 5m)
+	// Try nginx-ingress metrics first, fallback to generic http_requests_total
+	errorRate, err := p.queryScalar(ctx, fmt.Sprintf(
+		`sum(rate(nginx_ingress_controller_requests{%snamespace="%s",service=~"%s.*",status=~"5.."}[5m]))`,
+		clusterFilter, namespace, podFilter,
+	))
+	if err == nil && errorRate != nil {
+		facts.ErrorRate = errorRate
+	} else {
+		// Fallback: generic app-exported metrics
+		errorRate, err = p.queryScalar(ctx, fmt.Sprintf(
+			`sum(rate(http_requests_total{%snamespace="%s",pod=~"%s",code=~"5.."}[5m]))`,
+			clusterFilter, namespace, podFilter,
+		))
+		if err == nil && errorRate != nil {
+			facts.ErrorRate = errorRate
+		}
+	}
+
+	// HTTP 5xx error rate (1h ago baseline for spike detection)
+	errorRateBefore, err := p.queryScalar(ctx, fmt.Sprintf(
+		`sum(rate(nginx_ingress_controller_requests{%snamespace="%s",service=~"%s.*",status=~"5.."}[5m] offset 1h))`,
+		clusterFilter, namespace, podFilter,
+	))
+	if err == nil && errorRateBefore != nil {
+		facts.ErrorRateBefore = errorRateBefore
+	} else {
+		errorRateBefore, err = p.queryScalar(ctx, fmt.Sprintf(
+			`sum(rate(http_requests_total{%snamespace="%s",pod=~"%s",code=~"5.."}[5m] offset 1h))`,
+			clusterFilter, namespace, podFilter,
+		))
+		if err == nil && errorRateBefore != nil {
+			facts.ErrorRateBefore = errorRateBefore
+		}
+	}
+
 	return facts, nil
 }
 

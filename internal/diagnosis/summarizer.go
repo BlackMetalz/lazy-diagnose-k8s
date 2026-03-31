@@ -123,21 +123,23 @@ func resolveBackend(cfg SummarizerConfig) (baseURL, model string) {
 
 // evidenceSummary is a simplified view of evidence for the LLM prompt.
 type evidenceSummary struct {
-	Target         string                   `json:"target"`
-	Intent         string                   `json:"intent"`
-	Pods           []podBrief               `json:"pods,omitempty"`
-	Events         []eventBrief             `json:"events,omitempty"`
-	Rollout        *domain.RolloutStatus    `json:"rollout,omitempty"`
-	Resources      *domain.ResourceRequests `json:"resources,omitempty"`
-	LogErrors      []domain.LogPattern      `json:"log_errors,omitempty"`
-	LogTotal       int                      `json:"log_total_lines"`
-	MemoryUsageMi  *float64                 `json:"memory_usage_mi,omitempty"`
-	MemoryLimitMi  *float64                 `json:"memory_limit_mi,omitempty"`
-	CPUUsage       *float64                 `json:"cpu_usage_cores,omitempty"`
-	CPULimit       *float64                 `json:"cpu_limit_cores,omitempty"`
-	RestartRate    *float64                 `json:"restart_rate_15m,omitempty"`
-	Hypotheses     []hypothesisBrief        `json:"hypotheses"`
-	MissingSources []string                 `json:"missing_sources,omitempty"`
+	Target          string                   `json:"target"`
+	Intent          string                   `json:"intent"`
+	Pods            []podBrief               `json:"pods,omitempty"`
+	Events          []eventBrief             `json:"events,omitempty"`
+	Rollout         *domain.RolloutStatus    `json:"rollout,omitempty"`
+	Resources       *domain.ResourceRequests `json:"resources,omitempty"`
+	LogErrors       []domain.LogPattern      `json:"log_errors,omitempty"`
+	LogTotal        int                      `json:"log_total_lines"`
+	MemoryUsageMi   *float64                 `json:"memory_usage_mi,omitempty"`
+	MemoryLimitMi   *float64                 `json:"memory_limit_mi,omitempty"`
+	CPUUsage        *float64                 `json:"cpu_usage_cores,omitempty"`
+	CPULimit        *float64                 `json:"cpu_limit_cores,omitempty"`
+	RestartRate     *float64                 `json:"restart_rate_15m,omitempty"`
+	ErrorRate       *float64                 `json:"error_rate_5xx_per_sec,omitempty"`
+	ErrorRateBefore *float64                 `json:"error_rate_5xx_baseline,omitempty"`
+	Hypotheses      []hypothesisBrief        `json:"hypotheses"`
+	MissingSources  []string                 `json:"missing_sources,omitempty"`
 }
 
 type podBrief struct {
@@ -335,6 +337,8 @@ func buildEvidenceSummary(intent domain.Intent, bundle *domain.EvidenceBundle, r
 		es.CPUUsage = bundle.MetricsFacts.CPUUsage
 		es.CPULimit = bundle.MetricsFacts.CPULimit
 		es.RestartRate = bundle.MetricsFacts.RestartRate
+		es.ErrorRate = bundle.MetricsFacts.ErrorRate
+		es.ErrorRateBefore = bundle.MetricsFacts.ErrorRateBefore
 	}
 
 	if result.PrimaryHypothesis != nil {

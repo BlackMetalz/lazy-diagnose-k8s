@@ -15,9 +15,9 @@ type AlertmanagerPayload struct {
 	TruncatedAlerts   int               `json:"truncatedAlerts"`
 	Status            string            `json:"status"` // "firing" or "resolved"
 	Receiver          string            `json:"receiver"`
-	GroupLabels       map[string]string  `json:"groupLabels"`
-	CommonLabels      map[string]string  `json:"commonLabels"`
-	CommonAnnotations map[string]string  `json:"commonAnnotations"`
+	GroupLabels       map[string]string `json:"groupLabels"`
+	CommonLabels      map[string]string `json:"commonLabels"`
+	CommonAnnotations map[string]string `json:"commonAnnotations"`
 	ExternalURL       string            `json:"externalURL"`
 	Alerts            []Alert           `json:"alerts"`
 }
@@ -141,6 +141,13 @@ func extractTarget(alert Alert) AlertTarget {
 	if ds := firstOf(alert.Labels, "daemonset"); ds != "" {
 		t.Name = ds
 		t.Kind = "daemonset"
+		return t
+	}
+
+	// Service-level alerts (e.g., HTTP error rate from nginx-ingress)
+	if svc := firstOf(alert.Labels, "service"); svc != "" {
+		t.Name = svc
+		t.Kind = "deployment"
 		return t
 	}
 

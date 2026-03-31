@@ -383,7 +383,7 @@ func classifyLogLine(line string) finding {
 	connPatterns := []string{
 		"connection refused", "connection timed out", "dial tcp",
 		"econnrefused", "etimedout", "no such host",
-		"service unavailable", "503", "connect: connection refused",
+		"connect: connection refused",
 	}
 	for _, p := range connPatterns {
 		if strings.Contains(lower, p) {
@@ -451,6 +451,25 @@ func analyzeMetrics(bundle *domain.EvidenceBundle) finding {
 			Score: 30, MaxScore: 100,
 			Signals: []string{"high_restart_rate"},
 			Detail:  fmt.Sprintf("%.1f restarts/15min", *m.RestartRate),
+		}
+	}
+
+	// HTTP 5xx error rate spike
+	if m.ErrorRate != nil && *m.ErrorRate > 0.1 {
+		score := 40
+		detail := fmt.Sprintf("5xx error rate: %.2f req/s", *m.ErrorRate)
+		if m.ErrorRateBefore != nil && *m.ErrorRateBefore > 0 {
+			ratio := *m.ErrorRate / *m.ErrorRateBefore
+			if ratio > 2.0 {
+				score = 60
+				detail = fmt.Sprintf("5xx error rate: %.2f req/s (%.1fx increase vs 1h ago)", *m.ErrorRate, ratio)
+			}
+		}
+		return finding{
+			ID: "http_error_spike", Name: "HTTP 5xx error rate spike",
+			Score: score, MaxScore: 100,
+			Signals: []string{"high_5xx_rate"},
+			Detail:  detail,
 		}
 	}
 
@@ -613,6 +632,13 @@ func collectDetailedEvidence(bundle *domain.EvidenceBundle) []string {
 		}
 		if bundle.MetricsFacts.RestartRate != nil {
 			evidence = append(evidence, fmt.Sprintf("Restart rate: %.1f/15min", *bundle.MetricsFacts.RestartRate))
+		}
+		if bundle.MetricsFacts.ErrorRate != nil {
+			line := fmt.Sprintf("HTTP 5xx rate: %.2f req/s", *bundle.MetricsFacts.ErrorRate)
+			if bundle.MetricsFacts.ErrorRateBefore != nil {
+				line += fmt.Sprintf(" (was %.2f req/s 1h ago)", *bundle.MetricsFacts.ErrorRateBefore)
+			}
+			evidence = append(evidence, line)
 		}
 	}
 
@@ -791,6 +817,19 @@ func generateSummary(result *domain.DiagnosisResult, bundle *domain.EvidenceBund
 		parts = append(parts, "Container has high restart rate.")
 		parts = addTopLogError(parts, bundle)
 		parts = addRestartCount(parts, bundle)
+
+	case "http_error_spike":
+		parts = append(parts, "HTTP 5xx error rate is elevated.")
+		if bundle.MetricsFacts != nil && bundle.MetricsFacts.ErrorRate != nil {
+			if bundle.MetricsFacts.ErrorRateBefore != nil && *bundle.MetricsFacts.ErrorRateBefore > 0 {
+				ratio := *bundle.MetricsFacts.ErrorRate / *bundle.MetricsFacts.ErrorRateBefore
+				parts = append(parts, fmt.Sprintf("Current: %.2f req/s (%.1fx vs 1h ago).", *bundle.MetricsFacts.ErrorRate, ratio))
+			} else {
+				parts = append(parts, fmt.Sprintf("Current: %.2f 5xx/s.", *bundle.MetricsFacts.ErrorRate))
+			}
+		}
+		parts = addTopLogError(parts, bundle)
+		parts = append(parts, "Check application logs and recent deployments.")
 
 	default:
 		parts = append(parts, fmt.Sprintf("Issue detected: %s.", h.Name))
