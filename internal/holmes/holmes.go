@@ -78,24 +78,25 @@ func (c *Client) Investigate(ctx context.Context, question string) (string, erro
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			slog.Warn("holmes investigation timed out", "timeout", c.timeout, "duration", duration)
+			slog.Warn("holmes investigation timed out", "timeout", c.timeout, "duration", fmt.Sprintf("%.1fs", duration.Seconds()))
 			return "", fmt.Errorf("investigation timed out after %s", c.timeout)
 		}
 		errMsg := strings.TrimSpace(stderr.String())
 		if errMsg == "" {
 			errMsg = err.Error()
 		}
-		slog.Error("holmes investigation failed", "error", errMsg, "duration", duration)
+		slog.Error("holmes investigation failed", "error", errMsg, "duration", fmt.Sprintf("%.1fs", duration.Seconds()))
 		return "", fmt.Errorf("holmes: %s", errMsg)
 	}
 
 	rawOutput := stdout.String()
-	toolCalls := countToolCalls(rawOutput)
+	tools := extractToolCalls(rawOutput)
 	result := cleanOutput(rawOutput)
 	slog.Info("deep investigation complete",
 		"model", c.model,
-		"duration", duration,
-		"tool_calls", toolCalls,
+		"duration", fmt.Sprintf("%.1fs", duration.Seconds()),
+		"tool_calls", len(tools),
+		"tools", tools,
 		"raw_len", len(rawOutput),
 		"result_len", len(result),
 	)
@@ -227,17 +228,29 @@ func isNoiseLine(s string) bool {
 	return false
 }
 
-// countToolCalls counts how many tool calls Holmes made during investigation.
-// Holmes outputs lines like "Running tool #1 bash: kubectl get..." for each call.
-func countToolCalls(raw string) int {
-	count := 0
+// extractToolCalls extracts tool call descriptions from Holmes output.
+// Holmes outputs lines like "Running tool #1 bash: kubectl get deployment..."
+// Returns e.g. ["bash: kubectl get deployment...", "bash: kubectl describe pod..."]
+func extractToolCalls(raw string) []string {
+	var tools []string
 	for _, line := range strings.Split(raw, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "Running tool #") {
-			count++
+		if !strings.HasPrefix(trimmed, "Running tool #") {
+			continue
+		}
+		// Extract after "Running tool #N " — e.g. "Running tool #1 bash: kubectl get..."
+		// Find the space after the number
+		rest := strings.TrimPrefix(trimmed, "Running tool #")
+		if idx := strings.Index(rest, " "); idx >= 0 {
+			tool := strings.TrimSpace(rest[idx+1:])
+			// Truncate long commands
+			if len(tool) > 80 {
+				tool = tool[:80] + "..."
+			}
+			tools = append(tools, tool)
 		}
 	}
-	return count
+	return tools
 }
 
 // Available checks if the holmes CLI is installed.

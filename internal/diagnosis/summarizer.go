@@ -166,7 +166,7 @@ Write the incident note.`, targetName, intent, string(evidenceJSON))
 		}
 	}
 	if lastErr != nil {
-		slog.Error("LLM request failed", "model", s.model, "error", lastErr, "duration", time.Since(start))
+		slog.Error("LLM request failed", "model", s.model, "error", lastErr, "duration", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 		return "", fmt.Errorf("LLM API (%s): %w", s.model, lastErr)
 	}
 
@@ -179,7 +179,7 @@ Write the incident note.`, targetName, intent, string(evidenceJSON))
 		"input_tokens", resp.Usage.PromptTokens,
 		"output_tokens", resp.Usage.CompletionTokens,
 		"total_tokens", resp.Usage.TotalTokens,
-		"duration", time.Since(start).Round(time.Millisecond),
+		"duration", fmt.Sprintf("%.1fs", time.Since(start).Seconds()),
 	)
 
 	text := strings.TrimSpace(resp.Choices[0].Message.Content)
