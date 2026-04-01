@@ -48,7 +48,7 @@ func (c *Client) Investigate(ctx context.Context, question string) (string, erro
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	args := []string{"ask", question, "--no-interactive"}
+	args := []string{"ask", question, "--no-interactive", "--max-steps", "15", "--fast-mode"}
 	if c.model != "" {
 		args = append(args, "--model", c.model)
 	}
