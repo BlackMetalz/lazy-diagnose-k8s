@@ -40,14 +40,127 @@ func (e *Engine) SetHolmes(h *holmes.Client) { e.holmes = h }
 // HasHolmes returns true if HolmesGPT is configured.
 func (e *Engine) HasHolmes() bool { return e.holmes != nil }
 
+// DeepResult holds the parsed result of a Holmes investigation.
+type DeepResult struct {
+	Status    string // one-line health status
+	Problem   string // what's wrong
+	RootCause string // why
+	Fix       string // actionable steps
+	Raw       string // original output (fallback)
+}
+
+// Parsed returns true if structured sections were extracted.
+func (d *DeepResult) Parsed() bool {
+	return d.Problem != "" && d.RootCause != ""
+}
+
 // DeepInvestigate runs a HolmesGPT investigation for the given target.
-func (e *Engine) DeepInvestigate(ctx context.Context, target *domain.Target) (string, error) {
+func (e *Engine) DeepInvestigate(ctx context.Context, target *domain.Target) (*DeepResult, error) {
 	if e.holmes == nil {
-		return "", fmt.Errorf("HolmesGPT not configured")
+		return nil, fmt.Errorf("HolmesGPT not configured")
 	}
-	question := fmt.Sprintf("what is wrong with the %s %s in namespace %s?",
+	question := fmt.Sprintf(
+		"Investigate ONLY the %s %s in namespace %s. "+
+			"Focus on this specific resource: check its pods, logs, events, and status. "+
+			"Do NOT investigate other resources in the namespace. "+
+			"When done, output your final answer using EXACTLY this format:\n\n"+
+			"STATUS: <one line: healthy/unhealthy + replica count + restart count>\n"+
+			"PROBLEM: <one line describing the actual problem>\n"+
+			"ROOT_CAUSE: <1-3 lines explaining why>\n"+
+			"FIX: <numbered list of actionable fixes, max 4 items>\n\n"+
+			"Use only plain text. No markdown. Be concise.",
 		target.Kind, target.ResourceName, target.Namespace)
-	return e.holmes.Investigate(ctx, question)
+
+	raw, err := e.holmes.Investigate(ctx, question)
+	if err != nil {
+		return nil, err
+	}
+	return parseDeepResult(raw), nil
+}
+
+// parseDeepResult extracts STATUS/PROBLEM/ROOT_CAUSE/FIX sections from Holmes output.
+// Uses position-based search so markers can appear anywhere (not just line starts).
+func parseDeepResult(raw string) *DeepResult {
+	// Ordered markers — each section runs until the next marker
+	type marker struct {
+		key    string
+		prefix string
+	}
+	markers := []marker{
+		{"STATUS", "STATUS:"},
+		{"PROBLEM", "PROBLEM:"},
+		{"ROOT_CAUSE", "ROOT_CAUSE:"},
+		{"FIX", "FIX:"},
+	}
+
+	// Find position of each marker in the text
+	type found struct {
+		key string
+		pos int // position of content (after "KEY:")
+	}
+	var hits []found
+	for _, m := range markers {
+		idx := strings.Index(raw, m.prefix)
+		if idx >= 0 {
+			hits = append(hits, found{key: m.key, pos: idx + len(m.prefix)})
+		}
+	}
+
+	sections := make(map[string]string, len(markers))
+	for i, h := range hits {
+		var end int
+		if i+1 < len(hits) {
+			// Content runs until next marker's prefix start
+			end = hits[i+1].pos - len(markers[i+1].prefix)
+		} else {
+			end = len(raw)
+		}
+		// Find the start of the next marker prefix, not its content pos
+		content := strings.TrimSpace(raw[h.pos:end])
+		sections[h.key] = content
+	}
+
+	rootCause := sections["ROOT_CAUSE"]
+	fix := sections["FIX"]
+
+	// If FIX is empty but ROOT_CAUSE contains a numbered list, split it out
+	if fix == "" && rootCause != "" {
+		rootCause, fix = splitNumberedList(rootCause)
+	}
+
+	return &DeepResult{
+		Status:    sections["STATUS"],
+		Problem:   sections["PROBLEM"],
+		RootCause: rootCause,
+		Fix:       fix,
+		Raw:       raw,
+	}
+}
+
+// splitNumberedList extracts a trailing numbered list from text.
+// Returns (prose, numberedList). If no numbered list found, returns (text, "").
+func splitNumberedList(text string) (string, string) {
+	lines := strings.Split(text, "\n")
+
+	// Scan backwards to find where the numbered list starts
+	listStart := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if len(trimmed) > 1 && trimmed[0] >= '1' && trimmed[0] <= '9' && (trimmed[1] == '.' || trimmed[1] == ' ' || trimmed[1] == ')') {
+			listStart = i
+		} else if listStart >= 0 && trimmed != "" {
+			// Hit a non-numbered, non-empty line — stop
+			break
+		}
+	}
+
+	if listStart < 0 {
+		return text, ""
+	}
+
+	prose := strings.TrimSpace(strings.Join(lines[:listStart], "\n"))
+	list := strings.TrimSpace(strings.Join(lines[listStart:], "\n"))
+	return prose, list
 }
 
 // GetCollector returns the provider collector for direct use.

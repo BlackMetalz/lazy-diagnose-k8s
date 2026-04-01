@@ -9,24 +9,24 @@ import (
 
 // Config holds all application configuration.
 type Config struct {
-	Telegram   TelegramConfig   `yaml:"telegram"`
-	Webhook    WebhookConfig    `yaml:"webhook"`
-	LLM        LLMConfig        `yaml:"llm"`
-	Holmes     HolmesConfig     `yaml:"holmes"`
-	MCP        MCPConfig        `yaml:"mcp"`
-	Providers  ProvidersConfig  `yaml:"providers"`
-	Clusters   []ClusterConfig  `yaml:"clusters"`
-	Playbooks  PlaybookRules    `yaml:"playbooks"`
-	Redaction  RedactionRules   `yaml:"redaction"`
+	Telegram  TelegramConfig  `yaml:"telegram"`
+	Webhook   WebhookConfig   `yaml:"webhook"`
+	LLM       LLMConfig       `yaml:"llm"`
+	Holmes    HolmesConfig    `yaml:"holmes"`
+	MCP       MCPConfig       `yaml:"mcp"`
+	Providers ProvidersConfig `yaml:"providers"`
+	Clusters  []ClusterConfig `yaml:"clusters"`
+	Playbooks PlaybookRules   `yaml:"playbooks"`
+	Redaction RedactionRules  `yaml:"redaction"`
 }
 
 // HolmesConfig configures the HolmesGPT deep investigation integration.
 type HolmesConfig struct {
 	Enabled bool   `yaml:"enabled"`
-	Model   string `yaml:"model"`    // e.g. "openai/Qwen2.5-Coder-32B-Instruct"
+	Model   string `yaml:"model"`    // e.g. "gpt-oss-120b" ("openai/" prefix auto-added)
 	BaseURL string `yaml:"base_url"` // OpenAI-compatible endpoint
 	APIKey  string `yaml:"api_key"`
-	Timeout int    `yaml:"timeout"`  // seconds, default 120
+	Timeout int    `yaml:"timeout"` // seconds, default 120
 }
 
 // ClusterConfig defines a Kubernetes cluster connection.
@@ -37,13 +37,12 @@ type ClusterConfig struct {
 	Default    bool   `yaml:"default"`    // default cluster for commands without -c
 }
 
-// LLMConfig configures the LLM summarizer backend.
+// LLMConfig configures the LLM summarizer.
 type LLMConfig struct {
 	Enabled bool   `yaml:"enabled"`
-	Backend string `yaml:"backend"`  // ollama, gemini, openrouter, openai, or custom
-	BaseURL string `yaml:"base_url"` // auto-set per backend if empty
-	APIKey  string `yaml:"api_key"`  // not needed for ollama
-	Model   string `yaml:"model"`    // auto-set per backend if empty
+	BaseURL string `yaml:"base_url"` // OpenAI-compatible endpoint
+	APIKey  string `yaml:"api_key"`
+	Model   string `yaml:"model"`
 }
 
 // ProvidersConfig configures data source endpoints.
@@ -80,10 +79,10 @@ type MCPConfig struct {
 }
 
 type MCPServerConfig struct {
-	Command string   `yaml:"command"`
-	Args    []string `yaml:"args,omitempty"`
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args,omitempty"`
 	Env     map[string]string `yaml:"env,omitempty"`
-	Timeout int      `yaml:"timeout"` // seconds
+	Timeout int               `yaml:"timeout"` // seconds
 }
 
 // PlaybookRules holds scoring configuration for each playbook.
@@ -94,16 +93,16 @@ type PlaybookRules struct {
 }
 
 type HypothesisRule struct {
-	ID       string        `yaml:"id"`
-	Name     string        `yaml:"name"`
-	Signals  []SignalRule  `yaml:"signals"`
+	ID      string       `yaml:"id"`
+	Name    string       `yaml:"name"`
+	Signals []SignalRule `yaml:"signals"`
 }
 
 type SignalRule struct {
-	Name      string `yaml:"name"`
-	Match     string `yaml:"match"`     // what to look for
-	Source    string `yaml:"source"`     // k8s, logs, metrics
-	Weight    int    `yaml:"weight"`
+	Name   string `yaml:"name"`
+	Match  string `yaml:"match"`  // what to look for
+	Source string `yaml:"source"` // k8s, logs, metrics
+	Weight int    `yaml:"weight"`
 }
 
 type RedactionRules struct {

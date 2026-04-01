@@ -28,67 +28,39 @@ providers:
 #   - name: lazy-diag-2
 #     context: kind-lazy-diag-2
 
-# LLM summarizer (optional — bot works without it)
-# Env vars (LLM_BACKEND, LLM_API_KEY, etc.) override these values.
-llm:
-  enabled: false
-  backend: openai
-  model: openrouter/free
-  # backend: ollama | gemini | openrouter | openai | custom
-  # backend: ollama
-  # model: gemma3:4b             # default for ollama
-  # base_url: ""                 # auto-set per backend
-
-  ## Ollama (free, local)
-  # backend: ollama
-  # model: gemma3:4b
-  # base_url: http://localhost:11434/v1
-
-  ## Gemini (free tier: 15 RPM, 1M tokens/day)
-  # backend: gemini
-  # api_key: your-gemini-api-key
-  # model: gemini-2.0-flash
-
-  ## OpenRouter (free models: 20 req/min, 200 req/day)
-  # backend: openrouter
-  # api_key: your-openrouter-key
-  # model: meta-llama/llama-3.3-70b-instruct:free
-  ## Other free models:
-  ##   google/gemma-3-27b-it:free
-  ##   nvidia/nemotron-3-super-120b-a12b:free
-  ##   mistralai/mistral-small-3.1-24b-instruct:free
-  ##   openrouter/free  (auto-select)
-
-  ## OpenAI
-  # backend: openai
-  # api_key: your-openai-key
-  # model: gpt-4o-mini
-
-  ## FPT AI Marketplace (Vietnamese cloud, free tier available)
-  # backend: fpt
-  # api_key: your-fpt-api-key
-  # model: DeepSeek-R1-Distill-Llama-70B
-  ## Other models: Llama-3.3-70B-Instruct, Qwen2.5-Coder-32B-Instruct, QwQ-32B, DeepSeek-R1
-
-  ## Custom (any OpenAI-compatible endpoint)
-  # backend: custom
-  # base_url: http://your-server:8080/v1
-  # model: your-model
-  # api_key: your-key
+# LLM (optional — bot works without it)
+# Any OpenAI-compatible endpoint. Enabled when base_url + model are set.
+# Env vars (LLM_BASE_URL, LLM_API_KEY, LLM_MODEL) override these values.
+# llm:
+#   base_url: https://mkp-api.fptcloud.com/v1    # OpenAI-compatible endpoint
+#   api_key: your-key
+#   model: gpt-oss-120b
+## Example endpoints:
+##   Ollama:      http://localhost:11434/v1
+##   OpenRouter:  https://openrouter.ai/api/v1
+##   OpenAI:      https://api.openai.com/v1
+##   Gemini:      https://generativelanguage.googleapis.com/v1beta/openai
+##   FPT AI:      https://mkp-api.fptcloud.com/v1
 
 # HolmesGPT deep investigation (optional — agentic root cause analysis)
 # Requires 'holmes' CLI installed (pip install holmesgpt)
 # Model MUST support function calling (tool use)
+# Inherits base_url and api_key from LLM config — only model needs to be set separately
 # holmes:
 #   enabled: true
-#   model: openai/SaoLa3.1-medium               # must be "openai/<model>" format, must support tool calling
-#   base_url: https://mkp-api.fptcloud.com       # OpenAI-compatible endpoint
-#   api_key: your-key                             # shares LLM api_key if not set
+#   model: SaoLa3.1-medium                       # "openai/" prefix auto-added, must support tool calling
 #   timeout: 120                                  # seconds
+#   # base_url: ...                              # optional override, defaults to LLM base_url
+#   # api_key: ...                               # optional override, defaults to LLM api_key
 ## Models tested with FPT AI:
-##   openai/SaoLa3.1-medium          — function calling OK
-##   openai/SaoLa-Llama3.1-planner   — function calling OK
-##   openai/Qwen2.5-Coder-32B-Instruct — NO function calling (text only)
+##   SaoLa3.1-medium                 — function calling OK
+##   SaoLa-Llama3.1-planner          — function calling OK
+##   Qwen2.5-Coder-32B-Instruct      — NO function calling (text only)
+## FPT Marketplace models (https://marketplace.fptcloud.com):
+##   gpt-oss-120b                    — tool use + structured output (recommended for agentic)
+##   DeepSeek-V3.2-Speciale          — 671B, agentic support, max 8K output
+##   GLM-4.7                         — agentic + coding (expensive output: $2.20/M)
+##   Llama-3.3-70B-Instruct          — cheapest output, no explicit tool calling
 
 mcp:
   kubernetes:

@@ -26,8 +26,16 @@ func New(cfg config.HolmesConfig) *Client {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
+
+	// Holmes CLI (litellm) requires "openai/" prefix for OpenAI-compatible endpoints.
+	// Auto-add it so users just set the model name (e.g. "gpt-oss-120b").
+	model := cfg.Model
+	if model != "" && !strings.Contains(model, "/") {
+		model = "openai/" + model
+	}
+
 	return &Client{
-		model:   cfg.Model,
+		model:   model,
 		baseURL: cfg.BaseURL,
 		apiKey:  cfg.APIKey,
 		timeout: timeout,
@@ -50,6 +58,9 @@ func (c *Client) Investigate(ctx context.Context, question string) (string, erro
 	// Set env vars for OpenAI-compatible endpoint
 	cmd.Env = append(cmd.Environ(),
 		fmt.Sprintf("OPENAI_API_KEY=%s", c.apiKey),
+		// Suppress litellm warnings for unknown models
+		"OVERRIDE_MAX_CONTENT_SIZE=128000",
+		"OVERRIDE_MAX_OUTPUT_TOKEN=8192",
 	)
 	if c.baseURL != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("OPENAI_API_BASE=%s", c.baseURL))
@@ -78,8 +89,16 @@ func (c *Client) Investigate(ctx context.Context, question string) (string, erro
 		return "", fmt.Errorf("holmes: %s", errMsg)
 	}
 
-	result := cleanOutput(stdout.String())
-	slog.Info("holmes investigation complete", "duration", duration, "result_len", len(result))
+	rawOutput := stdout.String()
+	toolCalls := countToolCalls(rawOutput)
+	result := cleanOutput(rawOutput)
+	slog.Info("deep investigation complete",
+		"model", c.model,
+		"duration", duration,
+		"tool_calls", toolCalls,
+		"raw_len", len(rawOutput),
+		"result_len", len(result),
+	)
 
 	if result == "" {
 		return "", fmt.Errorf("holmes returned empty result")
@@ -88,30 +107,137 @@ func (c *Client) Investigate(ctx context.Context, question string) (string, erro
 	return result, nil
 }
 
-// cleanOutput strips holmes CLI progress/setup noise from output,
-// keeping only the actual investigation result.
+// cleanOutput extracts the final investigation result from holmes CLI output.
+// Holmes outputs setup noise, tool calls, reasoning blocks, and finally
+// the actual result in the last "AI:" block. We extract only that.
 func cleanOutput(raw string) string {
+	// Strategy: split by "AI:" blocks, take the last meaningful one.
+	// The last AI block is typically the conclusion/summary.
+	blocks := splitAIBlocks(raw)
+	if len(blocks) == 0 {
+		// Fallback: filter line by line
+		return filterNoise(raw)
+	}
+
+	// Take the last block — that's the conclusion
+	result := filterNoise(blocks[len(blocks)-1])
+	if result == "" && len(blocks) > 1 {
+		// If last block was empty after filtering, try second to last
+		result = filterNoise(blocks[len(blocks)-2])
+	}
+	return result
+}
+
+// splitAIBlocks splits holmes output into sections starting with "AI:".
+// Returns content of each AI block (without the "AI:" prefix).
+func splitAIBlocks(raw string) []string {
+	var blocks []string
+	var current []string
+	inBlock := false
+
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "AI:") || strings.HasPrefix(trimmed, "AI reasoning:") {
+			if inBlock && len(current) > 0 {
+				blocks = append(blocks, strings.Join(current, "\n"))
+			}
+			// Start new block, include text after "AI:" prefix
+			after := strings.TrimPrefix(trimmed, "AI reasoning:")
+			after = strings.TrimPrefix(after, "AI:")
+			after = strings.TrimSpace(after)
+			current = nil
+			if after != "" {
+				current = append(current, after)
+			}
+			inBlock = true
+			continue
+		}
+
+		if inBlock {
+			current = append(current, line)
+		}
+	}
+	if inBlock && len(current) > 0 {
+		blocks = append(blocks, strings.Join(current, "\n"))
+	}
+	return blocks
+}
+
+// filterNoise removes holmes/litellm internal lines from text.
+func filterNoise(raw string) string {
 	var lines []string
 	for _, line := range strings.Split(raw, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		// Skip toolset status lines
-		if strings.HasPrefix(trimmed, "✅ Toolset") || strings.HasPrefix(trimmed, "❌ Toolset") {
-			continue
-		}
-		// Skip setup/progress lines
-		if strings.HasPrefix(trimmed, "Loaded models:") ||
-			strings.HasPrefix(trimmed, "Refreshing available") ||
-			strings.HasPrefix(trimmed, "Toolset statuses are cached") ||
-			strings.HasPrefix(trimmed, "Using selected model:") ||
-			strings.HasPrefix(trimmed, "User:") {
+		if isNoiseLine(trimmed) {
 			continue
 		}
 		lines = append(lines, line)
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// isNoiseLine returns true for lines that are holmes internal noise.
+func isNoiseLine(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	noisePrefix := []string{
+		// litellm setup
+		"Loaded models:", "Refreshing available", "Toolset statuses are cached",
+		"Using selected model:", "Using model:", "Couldn't find model",
+		// holmes tool execution
+		"Running tool #", "Executing bash command:", "Finished #",
+		"The AI requested", "User:",
+		// task table
+		"Task List:", "+----+", "| ID |", "| id |",
+		// toolset status
+		"✅", "❌",
+	}
+	for _, p := range noisePrefix {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+
+	noiseContains := []string{
+		"was not set", "returned 1",
+		"OVERRIDE_MAX_", "ENABLE_INSPEKTOR",
+		"max_input_tokens", "max_output_tokens", "To override, set",
+		"/show ", "to view contents",
+		"tool call(s)",
+	}
+	for _, c := range noiseContains {
+		if strings.Contains(s, c) {
+			return true
+		}
+	}
+
+	// Task table rows: | 1  | Check deployment... | [~] in_progress |
+	if strings.HasPrefix(s, "|") && strings.HasSuffix(s, "|") {
+		return true
+	}
+
+	// Short fragments from split warnings (e.g. "required.", "set")
+	if len(s) < 15 && !strings.Contains(s, " ") {
+		return true
+	}
+
+	return false
+}
+
+// countToolCalls counts how many tool calls Holmes made during investigation.
+// Holmes outputs lines like "Running tool #1 bash: kubectl get..." for each call.
+func countToolCalls(raw string) int {
+	count := 0
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "Running tool #") {
+			count++
+		}
+	}
+	return count
 }
 
 // Available checks if the holmes CLI is installed.

@@ -123,13 +123,11 @@ func (e *Engine) DiagnoseWithContext(ctx context.Context, intent domain.Intent, 
 	if e.summarizer != nil {
 		e.logger.Info("generating summary",
 			"source", "llm",
-			"backend", e.summarizer.Backend(),
 			"model", e.summarizer.ModelName(),
 		)
 		llmSummary, err := e.summarizer.Summarize(ctx, intent, bundle, result)
 		if err != nil {
 			e.logger.Warn("LLM summarizer failed, falling back to template",
-				"backend", e.summarizer.Backend(),
 				"model", e.summarizer.ModelName(),
 				"error", err,
 			)
@@ -137,7 +135,6 @@ func (e *Engine) DiagnoseWithContext(ctx context.Context, intent domain.Intent, 
 		} else {
 			e.logger.Info("summary generated",
 				"source", "llm",
-				"backend", e.summarizer.Backend(),
 				"model", e.summarizer.ModelName(),
 			)
 			result.Summary = llmSummary

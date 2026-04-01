@@ -13,112 +13,40 @@ import (
 	"github.com/openai/openai-go/option"
 )
 
-// SummarizerConfig configures the LLM summarizer backend.
+// SummarizerConfig configures the LLM summarizer.
 type SummarizerConfig struct {
-	// Backend: "ollama", "gemini", "openrouter", "openai", or any OpenAI-compatible endpoint
-	Backend string
-	// BaseURL for the API. Auto-set based on Backend if empty.
+	// BaseURL for the OpenAI-compatible API endpoint.
 	BaseURL string
-	// APIKey for the provider. Not needed for Ollama.
+	// APIKey for the provider.
 	APIKey string
-	// Model name. Auto-set based on Backend if empty.
+	// Model name.
 	Model string
 }
 
 // Summarizer uses an LLM to generate natural language diagnosis summaries.
-// Supports any OpenAI-compatible API (Ollama, Gemini, OpenRouter, OpenAI, etc.)
+// Supports any OpenAI-compatible API.
 type Summarizer struct {
-	client  openai.Client
-	model   string
-	backend string
+	client openai.Client
+	model  string
 }
 
-// Backend returns the resolved backend name.
-func (s *Summarizer) Backend() string { return s.backend }
-
-// ModelName returns the resolved model name.
+// ModelName returns the model name.
 func (s *Summarizer) ModelName() string { return s.model }
 
 // NewSummarizer creates a new LLM summarizer from config.
 func NewSummarizer(cfg SummarizerConfig) *Summarizer {
-	baseURL, model := resolveBackend(cfg)
-
 	var opts []option.RequestOption
-	opts = append(opts, option.WithBaseURL(baseURL))
+	opts = append(opts, option.WithBaseURL(cfg.BaseURL))
 	if cfg.APIKey != "" {
 		opts = append(opts, option.WithAPIKey(cfg.APIKey))
 	} else {
-		// Ollama doesn't need auth, but SDK requires non-empty key
 		opts = append(opts, option.WithAPIKey("not-needed"))
 	}
 
-	client := openai.NewClient(opts...)
-
 	return &Summarizer{
-		client:  client,
-		model:   model,
-		backend: strings.ToLower(strings.TrimSpace(cfg.Backend)),
+		client: openai.NewClient(opts...),
+		model:  cfg.Model,
 	}
-}
-
-func resolveBackend(cfg SummarizerConfig) (baseURL, model string) {
-	baseURL = strings.TrimSpace(cfg.BaseURL)
-	model = strings.TrimSpace(cfg.Model)
-
-	switch strings.ToLower(strings.TrimSpace(cfg.Backend)) {
-	case "ollama":
-		if baseURL == "" {
-			baseURL = "http://localhost:11434/v1"
-		}
-		if model == "" {
-			model = "gemma3:4b"
-		}
-	case "gemini":
-		if baseURL == "" {
-			baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-		}
-		if model == "" {
-			model = "gemini-2.0-flash"
-		}
-	case "openrouter":
-		if baseURL == "" {
-			baseURL = "https://openrouter.ai/api/v1"
-		}
-		if model == "" {
-			model = "meta-llama/llama-3.3-70b-instruct:free"
-		}
-	case "openai":
-		if baseURL == "" {
-			baseURL = "https://api.openai.com/v1"
-		}
-		if model == "" {
-			model = "gpt-4o-mini"
-		}
-	case "anthropic":
-		if baseURL == "" {
-			baseURL = "https://api.anthropic.com/v1"
-		}
-		if model == "" {
-			model = "claude-haiku-4-5"
-		}
-	case "fpt":
-		if baseURL == "" {
-			baseURL = "https://mkp-api.fptcloud.com"
-		}
-		if model == "" {
-			model = "Qwen2.5-Coder-32B-Instruct"
-		}
-	default:
-		// Custom endpoint — user provides everything
-		if baseURL == "" {
-			baseURL = "http://localhost:11434/v1"
-		}
-		if model == "" {
-			model = "gemma3:4b"
-		}
-	}
-
-	return baseURL, model
 }
 
 // evidenceSummary is a simplified view of evidence for the LLM prompt.
@@ -211,13 +139,13 @@ Write the incident note.`, targetName, intent, string(evidenceJSON))
 			openai.SystemMessage(systemPrompt),
 			openai.UserMessage(userPrompt),
 		},
-		MaxTokens:   openai.Int(500),
+		MaxTokens:   openai.Int(4096),
 		Temperature: openai.Float(0.3),
 	}
 
 	// Retry with backoff for rate limiting (429)
 	start := time.Now()
-	slog.Info("LLM request", "backend", s.backend, "model", s.model, "target", evidence.Target)
+	slog.Info("LLM request", "model", s.model, "target", evidence.Target)
 
 	var resp *openai.ChatCompletion
 	var lastErr error
@@ -229,7 +157,7 @@ Write the incident note.`, targetName, intent, string(evidenceJSON))
 		if !strings.Contains(lastErr.Error(), "429") {
 			break // non-retryable error
 		}
-		slog.Warn("LLM rate limited, retrying", "attempt", attempt+1, "backend", s.backend)
+		slog.Warn("LLM rate limited, retrying", "attempt", attempt+1, "model", s.model)
 		wait := time.Duration(2<<attempt) * time.Second // 2s, 4s, 8s
 		select {
 		case <-ctx.Done():
@@ -238,7 +166,7 @@ Write the incident note.`, targetName, intent, string(evidenceJSON))
 		}
 	}
 	if lastErr != nil {
-		slog.Error("LLM request failed", "backend", s.backend, "model", s.model, "error", lastErr, "duration", time.Since(start))
+		slog.Error("LLM request failed", "model", s.model, "error", lastErr, "duration", time.Since(start))
 		return "", fmt.Errorf("LLM API (%s): %w", s.model, lastErr)
 	}
 
@@ -246,10 +174,27 @@ Write the incident note.`, targetName, intent, string(evidenceJSON))
 		return "", fmt.Errorf("LLM returned no choices")
 	}
 
-	tokens := int(resp.Usage.TotalTokens)
-	slog.Info("LLM response", "backend", s.backend, "model", s.model, "tokens", tokens, "duration", time.Since(start).Round(time.Millisecond))
+	slog.Info("ai investigate complete",
+		"model", s.model,
+		"input_tokens", resp.Usage.PromptTokens,
+		"output_tokens", resp.Usage.CompletionTokens,
+		"total_tokens", resp.Usage.TotalTokens,
+		"duration", time.Since(start).Round(time.Millisecond),
+	)
 
 	text := strings.TrimSpace(resp.Choices[0].Message.Content)
+	if text == "" {
+		// Debug: log raw response to diagnose empty content
+		slog.Warn("LLM empty content, dumping response",
+			"model", s.model,
+			"finish_reason", resp.Choices[0].FinishReason,
+			"refusal", resp.Choices[0].Message.Refusal,
+			"role", resp.Choices[0].Message.Role,
+			"choices_count", len(resp.Choices),
+			"tokens", resp.Usage.TotalTokens,
+		)
+		return "", fmt.Errorf("LLM returned empty response (model: %s)", s.model)
+	}
 	return stripMarkdown(text), nil
 }
 

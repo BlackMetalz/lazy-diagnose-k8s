@@ -120,25 +120,23 @@ The `/check` command also shows these buttons after returning results.
 
 ## LLM Summarizer
 
-Optional LLM-powered summaries. Without it, the bot uses template-based summaries (deterministic, fast). Configure in `config.yaml`:
+Optional LLM-powered summaries. Without it, the bot uses template-based summaries (deterministic, fast). Works with any OpenAI-compatible endpoint:
 
 ```yaml
 llm:
-  enabled: true
-  backend: ollama          # ollama | gemini | openrouter | openai | fpt | custom
-  model: gemma3:4b         # auto-set per backend if empty
-  # api_key: your-key      # not needed for ollama
+  base_url: https://mkp-api.fptcloud.com/v1
+  api_key: your-key
+  model: gpt-oss-120b
 ```
 
-| Backend | Cost | Default model |
-|---|---|---|
-| **Ollama** | Free (local) | `gemma3:4b` |
-| **Gemini** | Free tier (15 RPM) | `gemini-2.0-flash` |
-| **OpenRouter** | Free models available | `meta-llama/llama-3.3-70b-instruct:free` |
-| **FPT AI** | Free tier available | `Qwen2.5-Coder-32B-Instruct` |
-| **OpenAI** | Paid | `gpt-4o-mini` |
+Or via env vars:
+```bash
+export LLM_BASE_URL=https://mkp-api.fptcloud.com/v1
+export LLM_API_KEY=your-key
+export LLM_MODEL=gpt-oss-120b
+```
 
-See [full LLM setup guide](#llm-backend-details) below.
+Enabled automatically when `base_url` + `model` are set.
 
 ## Configuration
 
@@ -153,9 +151,10 @@ All config in `configs/config.yaml`. Env vars override config file values.
 | VictoriaMetrics | `providers.victoria_metrics_url` | `VICTORIA_METRICS_URL` | `http://localhost:8428` |
 | VictoriaLogs | `providers.victoria_logs_url` | `VICTORIA_LOGS_URL` | `http://localhost:9428` |
 | Default namespace | | `DEFAULT_NAMESPACE` | `prod` |
-| LLM backend | `llm.backend` | `LLM_BACKEND` | (disabled) |
-| LLM model | `llm.model` | `LLM_MODEL` | (per backend) |
+| LLM base URL | `llm.base_url` | `LLM_BASE_URL` | (disabled) |
+| LLM model | `llm.model` | `LLM_MODEL` | |
 | LLM API key | `llm.api_key` | `LLM_API_KEY` | |
+| Holmes model | `holmes.model` | `HOLMES_MODEL` | (uses LLM model if unset) |
 
 ## Deploy to K8s
 
@@ -232,26 +231,26 @@ holmes ask --help
 ### Configure
 
 ```yaml
-# config.yaml
+# config.yaml — Holmes inherits base_url and api_key from LLM config
 holmes:
   enabled: true
-  model: openai/SaoLa3.1-medium
-  base_url: https://mkp-api.fptcloud.com
-  api_key: your-key
+  model: SaoLa3.1-medium
   timeout: 120
 ```
 
 Or env vars:
 ```bash
-export HOLMES_MODEL=openai/SaoLa3.1-medium
-export HOLMES_BASE_URL=https://mkp-api.fptcloud.com
-# HOLMES_API_KEY auto-shared from LLM_API_KEY if not set
+export LLM_BASE_URL=https://mkp-api.fptcloud.com/v1
+export LLM_API_KEY=your-key
+export HOLMES_MODEL=SaoLa3.1-medium
+# base_url and api_key inherited from LLM — no separate env vars needed
+# "openai/" prefix is auto-added for Holmes CLI (litellm)
 ```
 
 **FPT AI models with function calling support:**
-- `openai/SaoLa3.1-medium` — tested OK
-- `openai/SaoLa-Llama3.1-planner` — tested OK
-- `openai/Qwen2.5-Coder-32B-Instruct` — NO function calling (use for AI Investigation only)
+- `SaoLa3.1-medium` — function calling OK
+- `SaoLa-Llama3.1-planner` — function calling OK
+- `Qwen2.5-Coder-32B-Instruct` — NO function calling (use for AI Investigation only)
 
 ### Usage
 
@@ -290,63 +289,14 @@ deploy/
 docs/                               Architecture and flow documentation
 ```
 
-## LLM Backend Details
+## LLM Endpoint Examples
 
-### Ollama (free, local)
+Any OpenAI-compatible endpoint works. Just set `base_url`, `model`, and `api_key`:
 
-```bash
-brew install ollama && ollama serve & && ollama pull gemma3:4b
-```
-```yaml
-llm:
-  enabled: true
-  backend: ollama
-  model: gemma3:4b     # or llama3.1:8b, gemma3:12b
-```
-
-### Gemini (free tier)
-
-Get API key at https://aistudio.google.com/apikey
-```yaml
-llm:
-  enabled: true
-  backend: gemini
-  api_key: your-key
-  model: gemini-2.0-flash
-```
-
-### OpenRouter (free models)
-
-Create account at https://openrouter.ai (no credit card needed)
-```yaml
-llm:
-  enabled: true
-  backend: openrouter
-  api_key: your-key
-  model: meta-llama/llama-3.3-70b-instruct:free
-```
-
-Other free models: `google/gemma-3-27b-it:free`, `nvidia/nemotron-3-super-120b-a12b:free`, `openrouter/free` (auto-select). Full list: https://openrouter.ai/collections/free-models
-
-### FPT AI Marketplace (Vietnamese cloud)
-
-Get API key at https://marketplace.fptcloud.com/ (My Account → My API Keys)
-```yaml
-llm:
-  enabled: true
-  backend: fpt
-  api_key: your-fpt-key
-  model: Qwen2.5-Coder-32B-Instruct
-```
-
-### Custom endpoint
-
-Any OpenAI-compatible API:
-```yaml
-llm:
-  enabled: true
-  backend: custom
-  base_url: http://your-server:8080/v1
-  model: your-model
-  api_key: your-key
-```
+| Provider | Base URL | Example model |
+|---|---|---|
+| **FPT AI** | `https://mkp-api.fptcloud.com/v1` | `gpt-oss-120b` |
+| **Ollama** | `http://localhost:11434/v1` | `gemma3:4b` |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free` |
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| **Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.0-flash` |

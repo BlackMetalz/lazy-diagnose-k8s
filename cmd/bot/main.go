@@ -25,6 +25,7 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
 
 	// Load config
 	configPath := envOr("CONFIG_PATH", "configs/config.yaml")
@@ -62,16 +63,18 @@ func main() {
 	// LLM Summarizer (optional — shared across clusters)
 	var summarizer *diagnosis.Summarizer
 	llmCfg := resolveLLMConfig(cfg)
-	if llmCfg.Backend != "" {
+	if llmCfg.Enabled {
 		summarizer = diagnosis.NewSummarizer(diagnosis.SummarizerConfig{
-			Backend: llmCfg.Backend,
 			BaseURL: llmCfg.BaseURL,
 			APIKey:  llmCfg.APIKey,
 			Model:   llmCfg.Model,
 		})
-		logger.Info("LLM summarizer enabled", "backend", summarizer.Backend(), "model", summarizer.ModelName())
+		logger.Info("llm summarizer",
+			"model", summarizer.ModelName(),
+			"base_url", llmCfg.BaseURL,
+		)
 	} else {
-		logger.Info("LLM summarizer disabled (configure llm section in config.yaml or set LLM_BACKEND env var)")
+		logger.Info("llm summarizer disabled")
 	}
 
 	// Victoria endpoints (shared across clusters)
@@ -190,16 +193,19 @@ func main() {
 	bot.SetClusters(clusters, defaultCluster)
 
 	// HolmesGPT deep investigation (optional)
-	holmesCfg := resolveHolmesConfig(cfg)
+	holmesCfg := resolveHolmesConfig(cfg, llmCfg)
 	if holmesCfg.Enabled {
 		if holmes.Available() {
 			h := holmes.New(holmesCfg)
 			for _, entry := range clusters {
 				entry.Engine.SetHolmes(h)
 			}
-			logger.Info("HolmesGPT enabled", "model", holmesCfg.Model)
+			logger.Info("holmes enabled",
+				"model", holmesCfg.Model,
+				"base_url", holmesCfg.BaseURL,
+			)
 		} else {
-			logger.Warn("HolmesGPT enabled in config but 'holmes' CLI not found in PATH")
+			logger.Warn("holmes enabled in config but 'holmes' CLI not found in PATH")
 		}
 	}
 
@@ -259,14 +265,11 @@ func initK8sProvider(logger *slog.Logger) (*k8sprovider.Provider, error) {
 
 // resolveLLMConfig merges config file + env var overrides.
 // Env vars take priority over config file values.
+// LLM is enabled when both base_url and model are set.
 func resolveLLMConfig(cfg *config.Config) config.LLMConfig {
 	result := cfg.LLM
 
 	// Env vars override config file
-	if v := os.Getenv("LLM_BACKEND"); v != "" {
-		result.Backend = v
-		result.Enabled = true
-	}
 	if v := os.Getenv("LLM_BASE_URL"); v != "" {
 		result.BaseURL = v
 	}
@@ -277,12 +280,8 @@ func resolveLLMConfig(cfg *config.Config) config.LLMConfig {
 		result.Model = v
 	}
 
-	// enabled: true in config but no backend → ignore
-	if result.Enabled && result.Backend == "" {
-		result.Backend = ""
-	}
-	// backend set → implicitly enabled
-	if result.Backend != "" {
+	// Implicitly enable when base_url and model are set
+	if result.BaseURL != "" && result.Model != "" {
 		result.Enabled = true
 	}
 
@@ -290,28 +289,24 @@ func resolveLLMConfig(cfg *config.Config) config.LLMConfig {
 }
 
 // resolveHolmesConfig merges config file + env var overrides for HolmesGPT.
-func resolveHolmesConfig(cfg *config.Config) config.HolmesConfig {
+// Holmes inherits everything from LLM config. HOLMES_MODEL overrides if set.
+func resolveHolmesConfig(cfg *config.Config, llmCfg config.LLMConfig) config.HolmesConfig {
 	result := cfg.Holmes
 
-	if v := os.Getenv("HOLMES_MODEL"); v != "" {
-		result.Model = v
+	// Inherit from LLM if not explicitly set in holmes config
+	if result.BaseURL == "" {
+		result.BaseURL = llmCfg.BaseURL
 	}
-	if v := os.Getenv("HOLMES_BASE_URL"); v != "" {
-		result.BaseURL = v
+	if result.APIKey == "" {
+		result.APIKey = llmCfg.APIKey
 	}
-	if v := os.Getenv("HOLMES_API_KEY"); v != "" {
-		result.APIKey = v
+	if result.Model == "" {
+		result.Model = llmCfg.Model
 	}
 
-	// If LLM is configured but Holmes has no separate key, share the LLM config
-	if result.APIKey == "" {
-		llm := resolveLLMConfig(cfg)
-		if llm.APIKey != "" {
-			result.APIKey = llm.APIKey
-		}
-		if result.BaseURL == "" && llm.BaseURL != "" {
-			result.BaseURL = llm.BaseURL
-		}
+	// HOLMES_MODEL env var overrides everything
+	if v := os.Getenv("HOLMES_MODEL"); v != "" {
+		result.Model = v
 	}
 
 	// Implicitly enable if model is set

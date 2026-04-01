@@ -78,13 +78,13 @@ flowchart TD
   - `logs/` — VictoriaLogs queries (container log retrieval).
   - `mock.go` — Mock provider for tests.
 - **playbook/** — Orchestrates evidence collection and delegates to the diagnosis engine. Selects which playbook (CrashLoop/Pending/Rollout) based on pod state.
-- **diagnosis/** — Core analysis: `analyzer.go` scores hypotheses against evidence using weighted signal matching, `engine.go` coordinates analysis flow, `summarizer.go` wraps LLM backends (Ollama/Gemini/OpenRouter/OpenAI/custom), `redact.go` strips secrets from output.
+- **diagnosis/** — Core analysis: `analyzer.go` scores hypotheses against evidence using weighted signal matching, `engine.go` coordinates analysis flow, `summarizer.go` wraps any OpenAI-compatible LLM endpoint, `redact.go` strips secrets from output.
 - **composer/** — Generates suggested kubectl commands based on diagnosis results.
 - **config/** — YAML config loading. Config at `configs/config.yaml`, env vars override config values.
 
 ## Configuration
 
-Config file: `configs/config.yaml`. Key env var overrides: `TELEGRAM_BOT_TOKEN` (required), `TELEGRAM_CHAT_ID`, `VICTORIA_METRICS_URL`, `VICTORIA_LOGS_URL`, `DEFAULT_NAMESPACE`, `LLM_BACKEND`, `LLM_MODEL`, `LLM_API_KEY`.
+Config file: `configs/config.yaml`. Key env var overrides: `TELEGRAM_BOT_TOKEN` (required), `TELEGRAM_CHAT_ID`, `VICTORIA_METRICS_URL`, `VICTORIA_LOGS_URL`, `DEFAULT_NAMESPACE`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `HOLMES_MODEL`.
 
 ## Testing
 

@@ -8,6 +8,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/lazy-diagnose-k8s/internal/domain"
+	"github.com/lazy-diagnose-k8s/internal/playbook"
 )
 
 // Callback data format: "action:cluster:ns:name"
@@ -134,7 +135,7 @@ func (b *Bot) handleAIInvestigation(ctx context.Context, chatID int64, replyTo i
 		summary, err := cluster.Engine.SummarizeWithLLM(ctx, intent, bundle)
 		if err != nil {
 			b.logger.Warn("AI investigation failed", "error", err)
-			text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ LLM unavailable: %s\n\nUse 📊 Static Analysis instead.", esc(err.Error()))
+			text := fmt.Sprintf("🤖 <b>AI Investigation</b>\n─────────────────────\n\n❌ %s\n\nUse 📊 Static Analysis instead.", esc(err.Error()))
 			keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "ai", cluster.Engine.HasHolmes())
 			b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
 			return
@@ -265,9 +266,52 @@ func (b *Bot) handleDeepInvestigation(ctx context.Context, chatID int64, replyTo
 		return
 	}
 
-	text := fmt.Sprintf("🔬 <b>Deep Investigation</b>\n─────────────────────\n\n%s", esc(result))
+	text := formatDeepInvestigation(target, result)
 	keyboard := buildPostDiagnosisKeyboard(cluster.Name, ns, name, "deep", true)
 	b.editMessageWithKeyboard(chatID, progressMsg, text, keyboard)
+}
+
+// formatDeepInvestigation formats a DeepResult as Telegram HTML.
+func formatDeepInvestigation(target *domain.Target, result *playbook.DeepResult) string {
+	var b strings.Builder
+
+	// Header
+	b.WriteString("🔬 <b>Deep Investigation</b>\n─────────────────────\n\n")
+
+	if !result.Parsed() {
+		// Fallback: show raw output in pre block
+		b.WriteString(fmt.Sprintf("<pre>%s</pre>", esc(result.Raw)))
+		return b.String()
+	}
+
+	// Target
+	b.WriteString(fmt.Sprintf("<b>Target:</b> <code>%s/%s</code> (%s)\n\n",
+		esc(target.Namespace), esc(target.ResourceName), esc(target.Kind)))
+
+	// Status
+	if result.Status != "" {
+		icon := "🟢"
+		lower := strings.ToLower(result.Status)
+		if strings.Contains(lower, "unhealthy") || strings.Contains(lower, "error") || strings.Contains(lower, "crash") {
+			icon = "🔴"
+		} else if strings.Contains(lower, "degraded") || strings.Contains(lower, "warning") {
+			icon = "🟡"
+		}
+		b.WriteString(fmt.Sprintf("%s <b>Status:</b> %s\n\n", icon, esc(result.Status)))
+	}
+
+	// Problem
+	b.WriteString(fmt.Sprintf("⚠️ <b>Problem:</b>\n%s\n\n", esc(result.Problem)))
+
+	// Root cause
+	b.WriteString(fmt.Sprintf("🔍 <b>Root cause:</b>\n%s\n\n", esc(result.RootCause)))
+
+	// Fix
+	if result.Fix != "" {
+		b.WriteString(fmt.Sprintf("🛠 <b>Fix:</b>\n%s", esc(result.Fix)))
+	}
+
+	return strings.TrimSpace(b.String())
 }
 
 // --- helpers ---

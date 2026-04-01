@@ -1,11 +1,17 @@
-.PHONY: build run test lint clean docker-build docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts load-5xx load-5xx-mix ingress ingress-cluster2 cluster2-create cluster2-monitoring cluster2-scenarios cluster2-clean host-ip-patch ubuntu-monitoring ubuntu-cluster2-monitoring
+.PHONY: build run test lint clean docker-build docker-run docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts load-5xx load-5xx-mix ingress ingress-cluster2 cluster2-create cluster2-monitoring cluster2-scenarios cluster2-clean ubuntu-monitoring ubuntu-cluster2-monitoring
 
 BINARY=lazy-diagnose-k8s
 IMAGE=lazy-diagnose-k8s:latest
 
+# ──────────────────────────────────────────────
+# Build & Run
+# ──────────────────────────────────────────────
+
 build:
 	go build -o bin/$(BINARY) ./cmd/bot
 
+# Run locally (no Docker). Holmes CLI must be installed on host.
+# Works on both macOS and Ubuntu — services accessed via localhost.
 run:
 	go run ./cmd/bot
 
@@ -18,19 +24,45 @@ lint:
 clean:
 	rm -rf bin/
 
+# ──────────────────────────────────────────────
 # Docker
+# ──────────────────────────────────────────────
+
 docker-build:
 	docker build -t $(IMAGE) .
 
-# Run Docker container locally
-docker-run: docker-build
-	docker run --rm --net=host -v $(HOME)/.kube/config:/root/.kube/config:ro -e TELEGRAM_BOT_TOKEN -e TELEGRAM_CHAT_ID -e LLM_BACKEND -e LLM_API_KEY -e LLM_MODEL -e HOLMES_MODEL -e HOLMES_BASE_URL -e HOLMES_API_KEY -e CONFIG_PATH=/etc/lazy-diagnose-k8s/config.yaml $(IMAGE)
+# Shared env vars for docker-run targets
+DOCKER_ENV = \
+	-e TELEGRAM_BOT_TOKEN -e TELEGRAM_CHAT_ID \
+	-e LLM_BASE_URL -e LLM_API_KEY -e LLM_MODEL -e HOLMES_MODEL \
+	-e CONFIG_PATH=/etc/lazy-diagnose-k8s/config.yaml
+
+# macOS (Docker Desktop): port mapping + host.docker.internal for host access
+docker-run: docker-run-macos
+
+docker-run-macos: docker-build
+	docker run --rm -p 8080:8080 \
+		-v $(HOME)/.kube/config:/root/.kube/config:ro \
+		$(DOCKER_ENV) \
+		-e VICTORIA_METRICS_URL=$${VICTORIA_METRICS_URL:-http://host.docker.internal:8428} \
+		-e VICTORIA_LOGS_URL=$${VICTORIA_LOGS_URL:-http://host.docker.internal:9428} \
+		$(IMAGE)
+
+# Ubuntu (Docker Engine): --net=host works natively, localhost = host
+docker-run-ubuntu: docker-build
+	docker run --rm --net=host \
+		-v $(HOME)/.kube/config:/root/.kube/config:ro \
+		$(DOCKER_ENV) \
+		$(IMAGE)
 
 # Load image into kind cluster
 docker-load: docker-build
 	kind load docker-image $(IMAGE) --name lazy-diag
 
-# Deploy to kind cluster
+# ──────────────────────────────────────────────
+# Deploy to K8s
+# ──────────────────────────────────────────────
+
 deploy: docker-load
 	kubectl apply -f deploy/bot/namespace.yaml
 	kubectl apply -f deploy/bot/rbac.yaml
@@ -44,7 +76,10 @@ deploy: docker-load
 	@echo "Then deploy:"
 	@echo "  kubectl apply -f deploy/bot/deployment.yaml"
 
-# Test scenarios
+# ──────────────────────────────────────────────
+# Test Scenarios
+# ──────────────────────────────────────────────
+
 scenarios:
 	@kubectl apply -f deploy/test-workloads/namespaces.yaml
 	@kubectl apply -f deploy/test-workloads/
@@ -67,13 +102,23 @@ scenarios-status:
 	@echo "  demo-staging: api-config-missing=CrashLoop  api-dependency-fail=CrashLoop  api-runtime-crash=CrashLoop  api-init-fail=Init:CrashLoop  webapp-testing=Running(5xx)"
 	@echo "  demo-infra:   api-bad-image=ImagePull  api-probe-fail=CrashLoop  ml-worker-taint=Pending  db-pvc-pending=Pending  api-not-ready=Running(0/1)"
 
+scenarios-clean:
+	@kubectl delete -f deploy/test-workloads/ --ignore-not-found
+	@kubectl delete pvc data-pvc-test -n demo-infra --ignore-not-found
+	@kubectl delete ns demo-prod demo-staging demo-infra --ignore-not-found
+	@echo "All scenarios removed."
+
+# ──────────────────────────────────────────────
+# Demo Alerts
+# ──────────────────────────────────────────────
+
 demo-alerts:
 	@./deploy/test-workloads/demo-webhooks.sh $(NUM)
 
-# Generate 5xx traffic to webapp-testing via ingress (Ctrl+C to stop)
-# Usage: make load-5xx              — 100% 5xx (always /503)
-#        make load-5xx-mix          — ~50% 5xx, 50% ok (uses /version endpoint)
-#        make load-5xx PORT=8180    — cluster 2
+# ──────────────────────────────────────────────
+# Traffic Generation (5xx)
+# ──────────────────────────────────────────────
+
 LOAD_5XX_PORT ?= 80
 LOAD_5XX_RPS ?= 10
 
@@ -85,13 +130,10 @@ load-5xx-mix:
 	@echo "Sending ~50%% 5xx to localhost:$(LOAD_5XX_PORT)/version (~$(LOAD_5XX_RPS) req/s). Ctrl+C to stop."
 	@while true; do curl -s -o /dev/null -w "%{http_code}\n" -H "Host: webapp-testing.local" http://localhost:$(LOAD_5XX_PORT)/version; sleep $$(echo "scale=3; 1/$(LOAD_5XX_RPS)" | bc); done
 
-scenarios-clean:
-	@kubectl delete -f deploy/test-workloads/ --ignore-not-found
-	@kubectl delete pvc data-pvc-test -n demo-infra --ignore-not-found
-	@kubectl delete ns demo-prod demo-staging demo-infra --ignore-not-found
-	@echo "All scenarios removed."
+# ──────────────────────────────────────────────
+# Ingress
+# ──────────────────────────────────────────────
 
-# Nginx Ingress Controller (required for HTTP error rate metrics)
 ingress:
 	kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/kind/deploy.yaml
 	@echo "Waiting for ingress-nginx controller to be ready..."
@@ -105,8 +147,6 @@ ingress:
 	kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
 	@echo "Ingress-nginx is ready (metrics on :10254)."
 
-# Nginx Ingress Controller for cluster 2
-# Cluster 2 uses hostPorts 8180/8443 to avoid conflict with cluster 1
 ingress-cluster2:
 	kubectl --context kind-lazy-diag-2 apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/kind/deploy.yaml
 	@echo "Waiting for ingress-nginx controller to be ready on cluster 2..."
@@ -120,7 +160,10 @@ ingress-cluster2:
 	kubectl --context kind-lazy-diag-2 -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
 	@echo "Ingress-nginx is ready on cluster 2 (ports 8180/8443, metrics on :10254)."
 
-# Cluster 2 (multi-cluster setup)
+# ──────────────────────────────────────────────
+# Multi-cluster
+# ──────────────────────────────────────────────
+
 cluster2-create:
 	kind create cluster --config deploy/kind-config-cluster2.yaml
 
@@ -138,14 +181,12 @@ cluster2-scenarios:
 cluster2-clean:
 	kind delete cluster --name lazy-diag-2
 
-# ──── Ubuntu (Docker Engine) ────
-# Uses deploy/monitoring/ubuntu/ YAMLs that read host IP from a ConfigMap.
-# No file patching needed — auto-detects the kind Docker bridge gateway IP.
+# ──────────────────────────────────────────────
+# Ubuntu Monitoring (Docker Engine — uses kind bridge gateway IP)
+# ──────────────────────────────────────────────
 
-# Detect host IP from kind Docker network (IPv4 gateway)
 KIND_HOST_IP = $(shell docker network inspect kind -f '{{range .IPAM.Config}}{{if .Gateway}}{{.Gateway}} {{end}}{{end}}' 2>/dev/null | grep -oE '([0-9]+\.){3}[0-9]+' | head -1)
 
-# Deploy monitoring to cluster 1 (Ubuntu)
 ubuntu-monitoring:
 	@if [ -z "$(KIND_HOST_IP)" ]; then echo "ERROR: Cannot detect kind network gateway. Is the kind cluster running?"; exit 1; fi
 	@echo "Detected host IP: $(KIND_HOST_IP)"
@@ -165,7 +206,6 @@ ubuntu-monitoring:
 	@echo ""
 	@echo "Done. Ubuntu monitoring deployed to cluster 1 (host: $(KIND_HOST_IP))"
 
-# Deploy monitoring to cluster 2 (Ubuntu)
 ubuntu-cluster2-monitoring:
 	@if [ -z "$(KIND_HOST_IP)" ]; then echo "ERROR: Cannot detect kind network gateway. Is the kind cluster running?"; exit 1; fi
 	@echo "Detected host IP: $(KIND_HOST_IP)"
