@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean docker-build docker-run docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts load-5xx load-5xx-mix ingress ingress-cluster2 cluster2-create cluster2-monitoring cluster2-scenarios cluster2-clean ubuntu-monitoring ubuntu-cluster2-monitoring
+.PHONY: build run test lint clean docker-build docker-run docker-load deploy scenarios scenarios-clean scenarios-status demo-alerts load-5xx load-5xx-mix ingress ingress-cluster2 cluster2-create cluster2-monitoring cluster2-scenarios cluster2-clean ubuntu-monitoring ubuntu-cluster2-monitoring ext-up ext-down ext-status
 
 BINARY=lazy-diagnose-k8s
 IMAGE=lazy-diagnose-k8s:latest
@@ -41,8 +41,14 @@ DOCKER_ENV = \
 docker-run: docker-run-macos
 
 docker-run-macos: docker-build
+	@# Rewrite kubeconfig for Docker Desktop: 127.0.0.1 → host.docker.internal
+	@# Also skip TLS verify since kind cert is issued for 127.0.0.1, not host.docker.internal
+	@mkdir -p /tmp/lazy-diagnose-k8s
+	@sed -e 's|https://127.0.0.1:|https://host.docker.internal:|g' \
+		-e 's|certificate-authority-data:.*|insecure-skip-tls-verify: true|g' \
+		$(HOME)/.kube/config > /tmp/lazy-diagnose-k8s/kubeconfig
 	docker run --rm -p 8080:8080 \
-		-v $(HOME)/.kube/config:/root/.kube/config:ro \
+		-v /tmp/lazy-diagnose-k8s/kubeconfig:/root/.kube/config:ro \
 		$(DOCKER_ENV) \
 		-e VICTORIA_METRICS_URL=$${VICTORIA_METRICS_URL:-http://host.docker.internal:8428} \
 		-e VICTORIA_LOGS_URL=$${VICTORIA_LOGS_URL:-http://host.docker.internal:9428} \
@@ -220,3 +226,40 @@ ubuntu-cluster2-monitoring:
 	kubectl --context kind-lazy-diag-2 apply -f deploy/monitoring/ubuntu/vlagent-cluster2.yaml
 	@echo ""
 	@echo "Done. Ubuntu monitoring deployed to cluster 2 (host: $(KIND_HOST_IP))"
+
+# ──────────────────────────────────────────────
+# External Resources (VictoriaMetrics + VictoriaLogs)
+# ──────────────────────────────────────────────
+
+VM_CONTAINER ?= victoria-metrics
+VL_CONTAINER ?= victoria-logs
+VM_IMAGE ?= victoriametrics/victoria-metrics:v1.138.0
+VL_IMAGE ?= victoriametrics/victoria-logs:v1.48.0
+VM_DATA ?= victoria-metrics-data
+VL_DATA ?= victoria-logs-data
+
+ext-up:
+	@echo "Starting VictoriaMetrics..."
+	@docker run -d --name $(VM_CONTAINER) \
+		-p 8428:8428 \
+		-v $(VM_DATA):/victoria-metrics-data \
+		$(VM_IMAGE) 2>/dev/null || docker start $(VM_CONTAINER)
+	@echo "Starting VictoriaLogs..."
+	@docker run -d --name $(VL_CONTAINER) \
+		-p 9428:9428 \
+		-v $(VL_DATA):/victoria-logs-data \
+		$(VL_IMAGE) 2>/dev/null || docker start $(VL_CONTAINER)
+	@echo "External resources are up."
+	@echo "  VictoriaMetrics: http://localhost:8428"
+	@echo "  VictoriaLogs:    http://localhost:9428"
+
+ext-down:
+	@echo "Stopping VictoriaMetrics..."
+	@docker stop $(VM_CONTAINER) 2>/dev/null || true
+	@echo "Stopping VictoriaLogs..."
+	@docker stop $(VL_CONTAINER) 2>/dev/null || true
+	@echo "External resources stopped."
+
+ext-status:
+	@echo "=== External Resources ==="
+	@docker ps -a --filter name=$(VM_CONTAINER) --filter name=$(VL_CONTAINER) --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
